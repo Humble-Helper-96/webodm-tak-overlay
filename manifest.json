@@ -1,0 +1,13 @@
+{
+    "name": "TAK Incident Overlay",
+    "webodmMinVersion": "2.9.4",
+    "description": "Convert drone photos into an MBTiles raster overlay for import into CloudTAK, ATAK, and other TAK clients. Designed for on-scene personnel with no WebODM experience.",
+    "version": "0.5.1",
+    "author": "AnchorTAK",
+    "email": "",
+    "repository": "",
+    "tags": ["tak", "overlay", "mbtiles", "incident", "drone"],
+    "homepage": "",
+    "experimental": true,
+    "deprecated": false
+}

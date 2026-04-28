@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TAK Incident Overlay</title>
+
+    <!--
+        WebODM ships Bootstrap 3 and Font Awesome 4 globally.
+        Reference them from WebODM's own static paths so this works
+        on a fully air-gapped LAN machine with no internet access.
+    -->
+    <link rel="stylesheet" href="/static/app/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/app/css/font-awesome.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <style>
+        /* ── CSS Variables — light/dark theme ───────────────────── */
+        :root,
+        [data-theme="light"] {
+            --bg-page:        #f0f4f8;
+            --bg-card:        #ffffff;
+            --bg-card-header: #f8fafc;
+            --bg-input:       #ffffff;
+            --bg-hover:       #f0f4f8;
+            --bg-standby:     #f0f9f4;
+
+            --border:         #e2e8f0;
+            --border-input:   #cbd5e1;
+            --border-accent:  #1a9e6e;
+
+            --text-primary:   #0f172a;
+            --text-secondary: #475569;
+            --text-muted:     #94a3b8;
+            --text-label:     #334155;
+
+            --accent-green:   #1a9e6e;
+            --accent-green-bg:#f0fdf4;
+            --accent-blue:    #3b82f6;
+            --accent-blue-bg: #eff6ff;
+            --accent-red:     #ef4444;
+            --accent-red-bg:  #fef2f2;
+            --accent-amber:   #f59e0b;
+
+            --btn-primary-bg: #3b82f6;
+            --btn-primary-border: #2563eb;
+            --btn-primary-text: #ffffff;
+
+            --btn-process-bg:     #ef4444;
+            --btn-process-border: #dc2626;
+            --btn-process-hover:  #dc2626;
+
+            --shadow-card:    0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-focus:   0 0 0 3px rgba(59,130,246,0.15);
+
+            --status-dot:     #1a9e6e;
+            --progress-track: #e2e8f0;
+        }
+
+        [data-theme="dark"] {
+            --bg-page:        #0d1117;
+            --bg-card:        #161b22;
+            --bg-card-header: #1c2330;
+            --bg-input:       #1c2330;
+            --bg-hover:       #1c2330;
+            --bg-standby:     #0d2318;
+
+            --border:         #30363d;
+            --border-input:   #30363d;
+            --border-accent:  #1a9e6e;
+
+            --text-primary:   #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted:     #484f58;
+            --text-label:     #adb5bd;
+
+            --accent-green:   #1a9e6e;
+            --accent-green-bg:#0d2318;
+            --accent-blue:    #58a6ff;
+            --accent-blue-bg: #0d1f3a;
+            --accent-red:     #f85149;
+            --accent-red-bg:  #2d1b1b;
+            --accent-amber:   #d29922;
+
+            --btn-primary-bg: #1f6feb;
+            --btn-primary-border: #1f6feb;
+            --btn-primary-text: #ffffff;
+
+            --btn-process-bg:     #b91c1c;
+            --btn-process-border: #991b1b;
+            --btn-process-hover:  #991b1b;
+
+            --shadow-card:    none;
+            --shadow-focus:   0 0 0 3px rgba(31,111,235,0.3);
+
+            --status-dot:     #1a9e6e;
+            --progress-track: #30363d;
+        }
+
+        /* ── Base ────────────────────────────────────────────────── */
+        * { box-sizing: border-box; }
+
+        body {
+            background-color: var(--bg-page);
+            padding: 0;
+            margin: 0;
+            font-family: 'DM Sans', "Helvetica Neue", Helvetica, sans-serif;
+            font-size: 14px;
+            color: var(--text-primary);
+            transition: background-color 0.2s, color 0.2s;
+        }
+
+        .tak-container {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 24px 16px 48px;
+        }
+
+        /* ── Page header ─────────────────────────────────────────── */
+        .tak-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tak-header-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--accent-green);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .tak-header-icon i {
+            font-size: 16px;
+            color: #fff;
+        }
+
+        .tak-header h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            font-family: 'DM Sans', sans-serif;
+            letter-spacing: -0.2px;
+        }
+
+        .tak-header .version-badge {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-card-header);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 7px;
+        }
+
+        /* ── Theme toggle ────────────────────────────────────────── */
+        .theme-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            margin-left: 12px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            transition: border-color 0.15s, color 0.15s;
+            user-select: none;
+        }
+
+        .theme-toggle:hover {
+            border-color: var(--accent-green);
+            color: var(--text-primary);
+        }
+
+        .theme-toggle i {
+            font-size: 13px;
+        }
+
+        /* ── Section cards ───────────────────────────────────────── */
+        .tak-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow-card);
+            transition: background 0.2s, border-color 0.2s;
+        }
+
+        .tak-card-header {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-card-header);
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tak-card-header h2 {
+            margin: 0;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .tak-card-header .section-num {
+            background: var(--accent-green);
+            color: #fff;
+            border-radius: 4px;
+            width: 20px;
+            height: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 700;
+            flex-shrink: 0;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .tak-card-body {
+            padding: 16px;
+        }
+
+        /* ── Form elements ───────────────────────────────────────── */
+        .form-group {
+            margin-bottom: 0;
+        }
+
+        .form-group label {
+            font-weight: 500;
+            font-size: 12px;
+            color: var(--text-label);
+            margin-bottom: 6px;
+            display: block;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .form-group .help-text {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 5px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .form-control {
+            border-radius: 6px;
+            border: 1px solid var(--border-input);
+            font-size: 14px;
+            background: var(--bg-input);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            width: 100%;
+            transition: border-color 0.15s, box-shadow 0.15s;
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .form-control:focus {
+            border-color: var(--accent-blue);
+            box-shadow: var(--shadow-focus);
+            outline: none;
+        }
+
+        .form-control::placeholder {
+            color: var(--text-muted);
+        }
+
+        /* ── File drop zone ──────────────────────────────────────── */
+        .file-drop-zone {
+            border: 1px dashed var(--border-input);
+            border-radius: 6px;
+            padding: 24px 16px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            background: var(--bg-card-header);
+        }
+
+        .file-drop-zone:hover {
+            border-color: var(--accent-green);
+            background: var(--accent-green-bg);
+            color: var(--accent-green);
+        }
+
+        .file-drop-zone i {
+            display: block;
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: var(--text-muted);
+        }
+
+        .file-drop-zone:hover i {
+            color: var(--accent-green);
+        }
+
+        .file-drop-zone.has-files {
+            border-color: var(--accent-green);
+            border-style: solid;
+            background: var(--accent-green-bg);
+            color: var(--accent-green);
+        }
+
+        .file-drop-zone.has-files i {
+            color: var(--accent-green);
+        }
+
+        /* ── Buttons ─────────────────────────────────────────────── */
+        .btn-process {
+            background-color: var(--btn-process-bg);
+            border: 1px solid var(--btn-process-border);
+            color: #fff;
+            font-weight: 600;
+            padding: 8px 24px;
+            font-size: 13px;
+            border-radius: 6px;
+            font-family: 'DM Sans', sans-serif;
+            letter-spacing: 0.2px;
+            transition: background 0.15s;
+        }
+
+        .btn-process:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn-process:hover:not(:disabled) {
+            background-color: var(--btn-process-hover);
+            color: #fff;
+        }
+
+        /* ── Status section ──────────────────────────────────────── */
+        .status-idle {
+            text-align: center;
+            padding: 28px 24px;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .status-idle i {
+            display: block;
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: var(--text-muted);
+        }
+
+        .status-job-name {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 14px;
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .status-phase-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .progress {
+            margin-bottom: 10px;
+            border-radius: 4px;
+            height: 6px;
+            background: var(--progress-track);
+            box-shadow: none;
+        }
+
+        .progress-bar {
+            border-radius: 4px;
+            transition: width 0.4s ease;
+            min-width: 0;
+            font-size: 0;  /* hide text — bar is too thin */
+        }
+
+        .progress-bar-warning {
+            background-color: var(--accent-amber);
+        }
+
+        /* ── Processing standby ──────────────────────────────────── */
+        .status-standby {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 16px;
+            margin-top: 12px;
+            color: var(--accent-green);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-standby);
+            border: 1px solid var(--border-accent);
+            border-radius: 6px;
+        }
+
+        .status-standby::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            flex-shrink: 0;
+            animation: pulse-dot 1.6s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50%       { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        /* ── Status error ────────────────────────────────────────── */
+        .status-error-box {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            background: var(--accent-red-bg);
+            border: 1px solid var(--accent-red);
+            border-radius: 6px;
+            padding: 12px 14px;
+            font-size: 13px;
+            color: var(--accent-red);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .status-error-box i {
+            margin-top: 1px;
+            flex-shrink: 0;
+        }
+
+        /* ── Archive section ─────────────────────────────────────── */
+        .archive-empty {
+            text-align: center;
+            padding: 28px 24px;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .archive-empty i {
+            display: block;
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+
+        #archive-table {
+            margin-bottom: 0;
+            font-size: 13px;
+        }
+
+        #archive-table th {
+            font-size: 10px;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            border-bottom: 1px solid var(--border) !important;
+            border-top: none !important;
+            padding: 8px 12px;
+            font-family: 'JetBrains Mono', monospace;
+            background: transparent;
+        }
+
+        #archive-table td {
+            vertical-align: middle;
+            padding: 10px 12px;
+            border-top: 1px solid var(--border) !important;
+            color: var(--text-primary);
+        }
+
+        /* Override Bootstrap table-striped for dark mode */
+        .table-striped > tbody > tr:nth-of-type(odd) {
+            background-color: var(--bg-card-header);
+        }
+
+        .table-striped > tbody > tr:nth-of-type(even) {
+            background-color: transparent;
+        }
+
+        .archive-job-name {
+            font-weight: 500;
+            color: var(--text-primary);
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .archive-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ── Inline flash messages ───────────────────────────────── */
+        .flash {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin-bottom: 12px;
+            display: none;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .flash.flash-error {
+            background: var(--accent-red-bg);
+            border: 1px solid var(--accent-red);
+            color: var(--accent-red);
+        }
+
+        .flash.flash-success {
+            background: var(--accent-green-bg);
+            border: 1px solid var(--accent-green);
+            color: var(--accent-green);
+        }
+
+        /* ── Action buttons (archive) ────────────────────────────── */
+        .btn-xs {
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 500;
+            letter-spacing: 0.2px;
+        }
+
+        .btn-success.btn-xs {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            color: #fff;
+        }
+
+        .btn-success.btn-xs:hover {
+            background: #158a5e;
+            border-color: #158a5e;
+            color: #fff;
+        }
+
+        .btn-default.btn-xs {
+            background: transparent;
+            border: 1px solid var(--border-input);
+            color: var(--text-secondary);
+        }
+
+        .btn-default.btn-xs:hover {
+            background: var(--bg-hover);
+            border-color: var(--text-muted);
+            color: var(--text-primary);
+        }
+
+        .btn-danger {
+            background: transparent;
+            border: 1px solid var(--border-input);
+            color: var(--text-secondary);
+            font-size: 12px;
+            padding: 5px 14px;
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: var(--accent-red-bg);
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+        }
+
+        .btn-danger:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn-default.btn-sm {
+            background: transparent;
+            border: 1px solid var(--border-input);
+            color: var(--text-secondary);
+            font-size: 12px;
+            padding: 5px 14px;
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .btn-default.btn-sm:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        /* ── Divider between form groups ─────────────────────────── */
+        .form-group + .form-group {
+            margin-top: 14px;
+        }
+
+        /* ── Cancel / dismiss button row ─────────────────────────── */
+        .action-row {
+            margin-top: 14px;
+            display: flex;
+            gap: 8px;
+        }
+
+        /* ── Inline info hints ───────────────────────────────────── */
+        .info-hint {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+            margin-top: 6px;
+            padding: 8px 11px;
+            background: var(--accent-blue-bg);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent-blue);
+            border-radius: 5px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.6;
+        }
+
+        .info-hint i {
+            color: var(--accent-blue);
+            margin-top: 1px;
+            flex-shrink: 0;
+            font-size: 12px;
+        }
+
+        .info-hint code {
+            background: var(--bg-card-header);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 0 4px;
+            font-size: 11px;
+            color: var(--accent-green);
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+
+<div class="tak-container">
+
+    <!-- ── Page Header ──────────────────────────────────────── -->
+    <div class="tak-header">
+        <div class="tak-header-icon">
+            <i class="fa fa-crosshairs"></i>
+        </div>
+        <h1>TAK Incident Overlay</h1>
+        <span class="version-badge">v{{ plugin_version }}</span>
+        <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" title="Toggle light/dark mode">
+            <i class="fa fa-moon-o" id="theme-icon"></i>
+            <span id="theme-label">Dark</span>
+        </button>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- SECTION 1 — New Job                                    -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="tak-card" id="new-job-card">
+        <div class="tak-card-header">
+            <span class="section-num">1</span>
+            <h2>New Job</h2>
+        </div>
+        <div class="tak-card-body">
+
+            <div class="flash flash-error" id="upload-error"></div>
+
+            <div class="form-group">
+                <label for="incident-name">Incident Name or Number</label>
+                <input
+                    type="text"
+                    id="incident-name"
+                    class="form-control"
+                    placeholder="e.g. Warehouse Fire or 2026-0421"
+                    maxlength="120"
+                    oninput="updateProcessButton()"
+                >
+                <div class="info-hint" style="margin-top:8px;">
+                    <i class="fa fa-info-circle"></i>
+                    <span>
+                        The name you enter becomes the output filename.
+                        Spaces are replaced with underscores and a date-time stamp is appended automatically —
+                        e.g. <code>Warehouse Fire</code> becomes <code>Warehouse_Fire_2026-04-28_1345.mbtiles</code>.
+                        Use a name or number that will be meaningful in the field.
+                    </span>
+                </div>
+            </div>
+
+            <div class="form-group" style="margin-top:14px;">
+                <label>Photos</label>
+                <div class="file-drop-zone" id="drop-zone" onclick="document.getElementById('photo-input').click()">
+                    <i class="fa fa-camera" id="drop-icon"></i>
+                    <span id="file-label">Click to select photos — JPG/JPEG only, 75 max</span>
+                </div>
+                <input
+                    type="file"
+                    id="photo-input"
+                    accept=".jpg,.jpeg"
+                    multiple
+                    style="display:none"
+                    onchange="onFilesSelected(this)"
+                >
+                <div class="help-text" id="file-count-text"></div>
+                <div class="info-hint" style="margin-top:8px;">
+                    <i class="fa fa-info-circle"></i>
+                    <span>
+                        <strong style="color:var(--text-primary);">Format:</strong> JPEG/JPG only. All photos must have GPS EXIF data (standard on drone cameras).<br>
+                        <strong style="color:var(--text-primary);">Limit:</strong> 75 photos maximum per job.<br>
+                        <strong style="color:var(--text-primary);">Resize:</strong> Photos are automatically downscaled to 2048px on the longest side before processing. Original files are not modified. This reduces processing time without meaningfully affecting orthophoto quality.
+                    </span>
+                </div>
+            </div>
+
+            <div style="margin-top: 16px;">
+                <button
+                    class="btn btn-process"
+                    id="process-btn"
+                    disabled
+                    onclick="onProcessClick()"
+                >
+                    <i class="fa fa-cog"></i>&nbsp; Process
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- SECTION 2 — Current Job Status                         -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="tak-card" id="status-card">
+        <div class="tak-card-header">
+            <span class="section-num">2</span>
+            <h2>Current Job</h2>
+        </div>
+        <div class="tak-card-body">
+
+            <!-- Idle state -->
+            <div class="status-idle" id="status-idle">
+                <i class="fa fa-circle-o"></i>
+                No job running.
+            </div>
+
+            <!-- Active / uploading / processing state -->
+            <div id="status-active" style="display:none;">
+                <div class="status-job-name" id="active-job-name"></div>
+
+                <!-- Upload progress (phase 1) -->
+                <div id="upload-phase">
+                    <div class="status-phase-label">
+                        <span>Uploading photos</span>
+                        <span id="upload-pct-label">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div
+                            class="progress-bar progress-bar-warning"
+                            id="upload-bar"
+                            role="progressbar"
+                            style="width:0%"
+                        ></div>
+                    </div>
+                </div>
+
+                <!-- Processing standby (phase 2) -->
+                <div id="process-phase" class="status-standby" style="display:none;">
+                    Images Processing Now — Standby
+                </div>
+
+                <div class="action-row">
+                    <button class="btn btn-danger btn-sm" id="cancel-btn" onclick="onCancelClick()">
+                        <i class="fa fa-times"></i> Cancel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Error state -->
+            <div id="status-error" style="display:none;">
+                <div class="status-error-box">
+                    <i class="fa fa-exclamation-circle"></i>
+                    <span>Processing failed — try again and check logs.</span>
+                </div>
+                <div class="action-row">
+                    <button class="btn btn-default btn-sm" onclick="resetToIdle()">
+                        <i class="fa fa-refresh"></i> Dismiss
+                    </button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- SECTION 3 — Completed Overlays Archive                 -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="tak-card">
+        <div class="tak-card-header">
+            <span class="section-num">3</span>
+            <h2>Completed Overlays</h2>
+        </div>
+        <div class="tak-card-body">
+
+            <div class="archive-empty" id="archive-empty">
+                <i class="fa fa-folder-open-o"></i>
+                No completed overlays yet.
+            </div>
+
+            <table class="table table-striped" id="archive-table" style="display:none;">
+                <thead>
+                    <tr>
+                        <th>Job Name</th>
+                        <th>Completed</th>
+                        <th>Size</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="archive-tbody">
+                </tbody>
+            </table>
+
+        </div>
+    </div>
+
+</div><!-- /.tak-container -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// Theme
+// ═══════════════════════════════════════════════════════════════════════════
+function toggleTheme() {
+    var html  = document.documentElement;
+    var isDark = html.getAttribute('data-theme') === 'dark';
+    var next   = isDark ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    try { localStorage.setItem('tak-overlay-theme', next); } catch(e) {}
+    updateThemeButton(next);
+}
+
+function updateThemeButton(theme) {
+    var icon  = document.getElementById('theme-icon');
+    var label = document.getElementById('theme-label');
+    if (theme === 'dark') {
+        icon.className  = 'fa fa-sun-o';
+        label.textContent = 'Light';
+    } else {
+        icon.className  = 'fa fa-moon-o';
+        label.textContent = 'Dark';
+    }
+}
+
+// Apply saved theme on load
+(function() {
+    var saved;
+    try { saved = localStorage.getItem('tak-overlay-theme'); } catch(e) {}
+    var theme = saved || 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    // Button update deferred to DOMContentLoaded
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════════════════════════════
+var selectedFiles  = [];
+var MAX_PHOTOS     = 75;
+var activeJobId    = null;
+var pollTimer      = null;
+var POLL_INTERVAL  = 10000;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Page load
+// ═══════════════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', function() {
+    // Sync theme button to current theme
+    var theme = document.documentElement.getAttribute('data-theme') || 'light';
+    updateThemeButton(theme);
+    loadArchive();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// File picker
+// ═══════════════════════════════════════════════════════════════════════════
+function onFilesSelected(input) {
+    var files = Array.from(input.files);
+    hideFlash('upload-error');
+
+    var nonJpeg = files.filter(function(f) {
+        return !f.name.match(/\.(jpg|jpeg)$/i);
+    });
+    if (nonJpeg.length > 0) {
+        showFlash('upload-error',
+            'Only JPG/JPEG photos are supported. Please remove other file types.');
+        input.value = '';
+        selectedFiles = [];
+        updateDropZone();
+        updateProcessButton();
+        return;
+    }
+
+    if (files.length > MAX_PHOTOS) {
+        showFlash('upload-error',
+            'Maximum ' + MAX_PHOTOS + ' photos per job. You selected ' +
+            files.length + '. Please remove some and try again.');
+        input.value = '';
+        selectedFiles = [];
+        updateDropZone();
+        updateProcessButton();
+        return;
+    }
+
+    selectedFiles = files;
+    updateDropZone();
+    updateProcessButton();
+}
+
+function updateDropZone() {
+    var zone  = document.getElementById('drop-zone');
+    var icon  = document.getElementById('drop-icon');
+    var label = document.getElementById('file-label');
+    var count = document.getElementById('file-count-text');
+
+    if (selectedFiles.length === 0) {
+        zone.classList.remove('has-files');
+        icon.className = 'fa fa-camera';
+        label.textContent = 'Click to select photos — JPG/JPEG only, 75 max';
+        count.textContent = '';
+    } else {
+        zone.classList.add('has-files');
+        icon.className = 'fa fa-check-circle';
+        label.textContent = selectedFiles.length +
+            ' photo' + (selectedFiles.length === 1 ? '' : 's') + ' selected';
+        count.textContent = selectedFiles.length + ' of ' + MAX_PHOTOS + ' maximum';
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Process button enable / disable
+// ═══════════════════════════════════════════════════════════════════════════
+function updateProcessButton() {
+    var name = document.getElementById('incident-name').value.trim();
+    var btn  = document.getElementById('process-btn');
+    btn.disabled = !(name.length > 0 && selectedFiles.length > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Upload + kick off pipeline
+// ═══════════════════════════════════════════════════════════════════════════
+function onProcessClick() {
+    hideFlash('upload-error');
+
+    var name = document.getElementById('incident-name').value.trim();
+    if (!name || selectedFiles.length === 0) return;
+
+    setFormLocked(true);
+
+    var fd = new FormData();
+    fd.append('incident_name', name);
+    fd.append('tz_offset', new Date().getTimezoneOffset());
+
+    for (var i = 0; i < selectedFiles.length; i++) {
+        fd.append('images[]', selectedFiles[i]);
+    }
+
+    showStatusActive(name);
+    showUploadPhase();
+
+    var xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', function(e) {
+        if (e.lengthComputable) {
+            var pct = Math.round((e.loaded / e.total) * 100);
+            setUploadProgress(pct);
+        }
+    });
+
+    xhr.addEventListener('load', function() {
+        if (xhr.status === 200) {
+            var resp;
+            try { resp = JSON.parse(xhr.responseText); } catch(e) { resp = null; }
+
+            if (resp && resp.ok) {
+                setUploadProgress(100);
+                activeJobId = resp.job_id;
+                showProcessPhase();
+                startPolling();
+            } else {
+                var msg = (resp && resp.error) ? resp.error : 'Upload failed. Please try again.';
+                showFlash('upload-error', msg);
+                resetToIdle();
+            }
+        } else {
+            showFlash('upload-error', 'Upload failed (HTTP ' + xhr.status + '). Please try again.');
+            resetToIdle();
+        }
+    });
+
+    xhr.addEventListener('error', function() {
+        showFlash('upload-error', 'Network error during upload. Check your connection and try again.');
+        resetToIdle();
+    });
+
+    xhr.open('POST', '/plugins/tak_incident_overlay/upload/');
+    var csrf = getCookie('csrftoken');
+    if (csrf) xhr.setRequestHeader('X-CSRFToken', csrf);
+    xhr.send(fd);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Status polling
+// ═══════════════════════════════════════════════════════════════════════════
+function startPolling() {
+    pollStatus();
+    pollTimer = setInterval(pollStatus, POLL_INTERVAL);
+}
+
+function stopPolling() {
+    if (pollTimer !== null) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+function pollStatus() {
+    if (!activeJobId) return;
+
+    fetch('/plugins/tak_incident_overlay/status/' + activeJobId + '/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok) return;
+
+            var status = data.status;
+
+            if (status === 'running') {
+                // keep polling
+
+            } else if (status === 'completed') {
+                stopPolling();
+                activeJobId = null;
+                setUploadProgress(100);
+                setTimeout(function() {
+                    resetToIdle();
+                    loadArchive();
+                }, 800);
+
+            } else if (status === 'failed') {
+                stopPolling();
+                activeJobId = null;
+                showStatusError();
+
+            } else if (status === 'cancelled') {
+                stopPolling();
+                activeJobId = null;
+                resetToIdle();
+            }
+        })
+        .catch(function() {
+            // Network hiccup — keep polling
+        });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cancel
+// ═══════════════════════════════════════════════════════════════════════════
+function onCancelClick() {
+    if (!activeJobId) return;
+    if (!confirm('Cancel the current job? The photos will be discarded.')) return;
+
+    var jobId = activeJobId;
+    document.getElementById('cancel-btn').disabled = true;
+
+    var csrf = getCookie('csrftoken');
+    fetch('/plugins/tak_incident_overlay/cancel/' + jobId + '/', {
+        method: 'POST',
+        headers: csrf ? {'X-CSRFToken': csrf} : {},
+    })
+    .then(function() {
+        stopPolling();
+        activeJobId = null;
+        resetToIdle();
+    })
+    .catch(function() {
+        stopPolling();
+        activeJobId = null;
+        resetToIdle();
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Archive (Section 3)
+// ═══════════════════════════════════════════════════════════════════════════
+function loadArchive() {
+    fetch('/plugins/tak_incident_overlay/jobs/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) renderArchive(data.jobs);
+        })
+        .catch(function() {});
+}
+
+function renderArchive(jobs) {
+    var completed = jobs.filter(function(j) { return j.status === 'completed'; });
+
+    var empty = document.getElementById('archive-empty');
+    var table = document.getElementById('archive-table');
+    var tbody = document.getElementById('archive-tbody');
+
+    if (completed.length === 0) {
+        empty.style.display = '';
+        table.style.display = 'none';
+        return;
+    }
+
+    empty.style.display = 'none';
+    table.style.display = '';
+    tbody.innerHTML = '';
+
+    completed.forEach(function(job) {
+        var tr = document.createElement('tr');
+
+        var tdName = document.createElement('td');
+        tdName.innerHTML =
+            '<div class="archive-job-name">' + esc(job.display_name) + '</div>';
+        tr.appendChild(tdName);
+
+        var tdDate = document.createElement('td');
+        tdDate.innerHTML =
+            '<span class="archive-meta">' + formatDate(job.completed_at) + '</span>';
+        tr.appendChild(tdDate);
+
+        var tdSize = document.createElement('td');
+        tdSize.innerHTML =
+            '<span class="archive-meta">' + formatSize(job.file_size_bytes) + '</span>';
+        tr.appendChild(tdSize);
+
+        var tdActions = document.createElement('td');
+        tdActions.style.whiteSpace = 'nowrap';
+        tdActions.innerHTML =
+            '<a href="/plugins/tak_incident_overlay/download/' + esc(job.job_id) + '/" ' +
+               'class="btn btn-success btn-xs" style="margin-right:6px;">' +
+               '<i class="fa fa-download"></i> Download</a>' +
+            '<button class="btn btn-default btn-xs" ' +
+               'onclick="onDeleteClick(\'' + esc(job.job_id) + '\')">' +
+               '<i class="fa fa-trash-o"></i> Delete</button>';
+        tr.appendChild(tdActions);
+
+        tbody.appendChild(tr);
+    });
+}
+
+function onDeleteClick(jobId) {
+    if (!confirm('Delete this overlay? The file cannot be recovered.')) return;
+
+    var csrf = getCookie('csrftoken');
+    fetch('/plugins/tak_incident_overlay/delete/' + jobId + '/', {
+        method: 'POST',
+        headers: csrf ? {'X-CSRFToken': csrf} : {},
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) loadArchive();
+    })
+    .catch(function() {});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UI state helpers
+// ═══════════════════════════════════════════════════════════════════════════
+function setFormLocked(locked) {
+    document.getElementById('incident-name').disabled = locked;
+    document.getElementById('photo-input').disabled   = locked;
+    document.getElementById('process-btn').disabled   = locked;
+    document.getElementById('drop-zone').style.pointerEvents = locked ? 'none' : '';
+    document.getElementById('drop-zone').style.opacity = locked ? '0.5' : '';
+}
+
+function showStatusActive(jobName) {
+    document.getElementById('status-idle').style.display   = 'none';
+    document.getElementById('status-error').style.display  = 'none';
+    document.getElementById('status-active').style.display = '';
+    document.getElementById('active-job-name').textContent = jobName;
+    document.getElementById('cancel-btn').disabled = false;
+}
+
+function showUploadPhase() {
+    document.getElementById('upload-phase').style.display  = '';
+    document.getElementById('process-phase').style.display = 'none';
+}
+
+function showProcessPhase() {
+    setUploadProgress(100);
+    document.getElementById('process-phase').style.display = '';
+}
+
+function showStatusError() {
+    document.getElementById('status-active').style.display = 'none';
+    document.getElementById('status-idle').style.display   = 'none';
+    document.getElementById('status-error').style.display  = '';
+    setFormLocked(false);
+}
+
+function resetToIdle() {
+    stopPolling();
+    document.getElementById('status-active').style.display = 'none';
+    document.getElementById('status-error').style.display  = 'none';
+    document.getElementById('status-idle').style.display   = '';
+
+    setFormLocked(false);
+    document.getElementById('incident-name').value = '';
+    document.getElementById('photo-input').value   = '';
+    selectedFiles = [];
+    updateDropZone();
+    updateProcessButton();
+}
+
+function setUploadProgress(pct) {
+    var bar   = document.getElementById('upload-bar');
+    var label = document.getElementById('upload-pct-label');
+    bar.style.width   = pct + '%';
+    label.textContent = pct + '%';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Flash messages
+// ═══════════════════════════════════════════════════════════════════════════
+function showFlash(id, msg) {
+    var el = document.getElementById(id);
+    el.textContent   = msg;
+    el.style.display = '';
+}
+
+function hideFlash(id) {
+    document.getElementById(id).style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Utilities
+// ═══════════════════════════════════════════════════════════════════════════
+function getCookie(name) {
+    var value = '; ' + document.cookie;
+    var parts = value.split('; ' + name + '=');
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return null;
+}
+
+function esc(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function formatDate(iso) {
+    if (!iso) return '—';
+    try {
+        var d = new Date(iso);
+        return d.toLocaleDateString() + ' ' +
+               d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    } catch(e) {
+        return iso;
+    }
+}
+
+function formatSize(bytes) {
+    if (!bytes) return '—';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
+</script>
+
+</body>
+</html>
