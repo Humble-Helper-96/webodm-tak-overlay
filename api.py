@@ -1,14 +1,16 @@
 """
-api.py — TAK Incident Overlay (v0.6.0)
+api.py — TAK Incident Overlay (v0.7.2)
 All HTTP view functions. Registered as MountPoints in plugin.py.
 
 Endpoints:
-    POST  upload/                      Start a new job
-    GET   jobs/                        List all jobs (for archive section)
-    GET   status/(?P<job_id>[^/]+)/    Poll a specific job's status
-    POST  cancel/(?P<job_id>[^/]+)/    Cancel a running job
-    GET   download/(?P<job_id>[^/]+>/  Download completed MBTiles file
-    POST  delete/(?P<job_id>[^/]+>/    Delete a completed/failed/cancelled job
+    POST  upload/                              Start a new job
+    GET   jobs/                                List all jobs (for archive section)
+    GET   status/(?P<job_id>[^/]+)/            Poll a specific job's status
+    POST  cancel/(?P<job_id>[^/]+)/            Cancel a running job
+    GET   download/(?P<job_id>[^/]+)/          Download completed MBTiles file
+    GET   download-geotiff/(?P<job_id>[^/]+)/  Download completed GeoTIFF file
+    POST  delete/(?P<job_id>[^/]+)/            Delete a completed/failed/cancelled job
+    GET   node-status/                         Processing node online/offline status (v0.7.2)
 """
 
 import io
@@ -25,7 +27,7 @@ from . import archive
 
 log = logging.getLogger(__name__)
 
-MAX_PHOTOS         = 75
+MAX_PHOTOS         = 100
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg'}
 
 # JPEG magic bytes (SOI marker)
@@ -272,6 +274,7 @@ def status_view(request, job_id):
           "ok": true,
           "job_id":          str,
           "status":          "running"|"completed"|"failed"|"cancelled",
+          "phase":           str (current pipeline phase, v0.7.2+),
           "display_name":    str,
           "webodm_progress": float (0.0–1.0) | null,
           "webodm_stage":    str | null,
@@ -296,13 +299,12 @@ def status_view(request, job_id):
             webodm_progress = float(task.running_progress or 0)
             webodm_stage    = _stage_label(task.status, webodm_progress)
         except Exception as e:
-            # Task.DoesNotExist is the common case after cleanup;
-            # AttributeError covers WebODM API drift on running_progress.
             log.debug('TAK Overlay: status_view could not read task progress: %s', e)
 
     return _ok(
         job_id=          job['job_id'],
         status=          job['status'],
+        phase=           job.get('phase', ''),
         display_name=    job['display_name'],
         webodm_progress= webodm_progress,
         webodm_stage=    webodm_stage,
@@ -410,6 +412,83 @@ def download_view(request, job_id):
     response['Content-Disposition'] = f'attachment; filename="{safe_name}"'
     log.info('TAK Overlay: serving download for job %s (%s)', job_id, safe_name)
     return response
+
+
+# ── GeoTIFF download (v0.7.0) ──────────────────────────────────────────────────
+
+@login_required
+def download_geotiff_view(request, job_id):
+    """
+    GET /plugins/tak_incident_overlay/download-geotiff/<job_id>/
+
+    Streams the completed RGB GeoTIFF file as a download attachment.
+    The GeoTIFF is a 3-band (R, G, B) WGS84 raster derived from the same
+    orthophoto as the MBTiles output. Useful for GIS tools (QGIS, ArcGIS)
+    or TAK server tile workflows that prefer plain GeoTIFF over MBTiles.
+
+    Jobs created in v0.6 and earlier do not have a GeoTIFF — those return
+    404 with a clear message.
+    """
+    job = archive.get_job(job_id)
+    if job is None:
+        raise Http404('Job not found.')
+    if job['status'] != 'completed':
+        return _err('Job is not completed yet.', 400)
+
+    # v0.6 jobs in the index don't have geotiff_filename — return clean 404
+    if not job.get('geotiff_filename'):
+        return _err(
+            'No GeoTIFF available for this job. '
+            'Only jobs processed by plugin v0.7+ produce a GeoTIFF.',
+            404,
+        )
+
+    geotiff_path = archive.get_geotiff_path(job)
+    if not os.path.exists(geotiff_path):
+        return _err(
+            'Output file not found. It may have been automatically purged after 72 hours.',
+            404,
+        )
+
+    safe_name = _safe_filename(job.get('geotiff_filename') or 'overlay.tif')
+    response = FileResponse(
+        open(geotiff_path, 'rb'),
+        content_type='image/tiff',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{safe_name}"'
+    log.info('TAK Overlay: serving GeoTIFF download for job %s (%s)', job_id, safe_name)
+    return response
+
+
+# ── Node status (v0.7.2) ───────────────────────────────────────────────────────
+
+@login_required
+def node_status_view(request):
+    """
+    GET /plugins/tak_incident_overlay/node-status/
+
+    Returns the online/offline state of the primary processing node.
+    Queries WebODM's ProcessingNode model, which is refreshed by a background
+    Celery task — this endpoint returns the cached state, not a live probe.
+
+    Returns JSON:
+        {"ok": true, "online": true,  "name": "node-odx-1"}
+        {"ok": true, "online": false, "name": "node-odx-1"}
+        {"ok": true, "online": false, "name": "No node configured"}
+    """
+    try:
+        from nodeodm.models import ProcessingNode
+        node = ProcessingNode.objects.filter(enabled=True).order_by('id').first()
+        if node is None:
+            return _ok(online=False, name='No node configured')
+        try:
+            online = node.is_online()
+        except Exception:
+            online = False
+        return _ok(online=online, name=node.hostname)
+    except Exception as e:
+        log.warning('TAK Overlay: node_status_view error: %s', e)
+        return _ok(online=False, name='Unknown')
 
 
 # ── Delete ─────────────────────────────────────────────────────────────────────

@@ -1,1036 +1,1045 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TAK Incident Overlay</title>
+    <title>TAK Incident Overlay Generator</title>
 
     <!--
-        WebODM ships Bootstrap 3 and Font Awesome 4 globally.
-        Reference them from WebODM's own static paths so this works
-        on a fully air-gapped LAN machine with no internet access.
+        Font Awesome 4 ships with WebODM, available without internet access.
+        Bootstrap is intentionally NOT loaded — v0.7 uses a purpose-built
+        infra-TAK design system, not Bootstrap classes.
     -->
-    <link rel="stylesheet" href="/static/app/css/bootstrap.min.css">
     <link rel="stylesheet" href="/static/app/css/font-awesome.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 
     <style>
-        /* ── CSS Variables — light/dark theme ───────────────────── */
-        :root,
-        [data-theme="light"] {
-            --bg-page:        #f0f4f8;
-            --bg-card:        #ffffff;
-            --bg-card-header: #f8fafc;
-            --bg-input:       #ffffff;
-            --bg-hover:       #f0f4f8;
-            --bg-standby:     #f0f9f4;
+        /* ── infra-TAK design tokens (dark always) ───────────────── */
+        :root {
+            --bg-page:           #0a0e14;
+            --bg-panel:          #11161e;
+            --bg-elevated:       #161d27;
+            --bg-input:          #1a212c;
+            --bg-hover:          #1e2632;
+            --bg-success-soft:   #0f2820;
+            --bg-warning-soft:   #2a1f0f;
+            --bg-danger-soft:    #2a1414;
+            --bg-info-soft:      #102132;
 
-            --border:         #e2e8f0;
-            --border-input:   #cbd5e1;
-            --border-accent:  #1a9e6e;
+            --border:            #232b35;
+            --border-strong:     #2f3947;
+            --border-input:      #2a3340;
+            --border-accent:     #00d68f;
 
-            --text-primary:   #0f172a;
-            --text-secondary: #475569;
-            --text-muted:     #94a3b8;
-            --text-label:     #334155;
+            --text-primary:      #e6edf3;
+            --text-secondary:    #9aa5b4;
+            --text-muted:        #6b7785;
+            --text-label:        #c0c8d4;
+            --text-on-accent:    #0a0e14;
 
-            --accent-green:   #1a9e6e;
-            --accent-green-bg:#f0fdf4;
-            --accent-blue:    #3b82f6;
-            --accent-blue-bg: #eff6ff;
-            --accent-red:     #ef4444;
-            --accent-red-bg:  #fef2f2;
-            --accent-amber:   #f59e0b;
+            --accent-green:      #00d68f;
+            --accent-green-dim:  #00a86f;
+            --accent-amber:      #f5b73b;
+            --accent-amber-dim:  #c79124;
+            --accent-red:        #ff5757;
+            --accent-red-dim:    #cc4040;
+            --accent-blue:       #4d9fff;
 
-            --btn-primary-bg: #3b82f6;
-            --btn-primary-border: #2563eb;
-            --btn-primary-text: #ffffff;
+            --shadow-panel:      0 1px 0 rgba(255,255,255,0.02), 0 0 0 1px rgba(0,0,0,0.4);
+            --shadow-focus:      0 0 0 2px rgba(0,214,143,0.35);
 
-            --btn-process-bg:     #ef4444;
-            --btn-process-border: #dc2626;
-            --btn-process-hover:  #dc2626;
+            --font-mono:         'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+            --font-body:         'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
 
-            --shadow-card:    0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-            --shadow-focus:   0 0 0 3px rgba(59,130,246,0.15);
-
-            --status-dot:     #1a9e6e;
-            --progress-track: #e2e8f0;
+            --header-h:          44px;
         }
 
-        [data-theme="dark"] {
-            --bg-page:        #0d1117;
-            --bg-card:        #161b22;
-            --bg-card-header: #1c2330;
-            --bg-input:       #1c2330;
-            --bg-hover:       #1c2330;
-            --bg-standby:     #0d2318;
-
-            --border:         #30363d;
-            --border-input:   #30363d;
-            --border-accent:  #1a9e6e;
-
-            --text-primary:   #e6edf3;
-            --text-secondary: #8b949e;
-            --text-muted:     #484f58;
-            --text-label:     #adb5bd;
-
-            --accent-green:   #1a9e6e;
-            --accent-green-bg:#0d2318;
-            --accent-blue:    #58a6ff;
-            --accent-blue-bg: #0d1f3a;
-            --accent-red:     #f85149;
-            --accent-red-bg:  #2d1b1b;
-            --accent-amber:   #d29922;
-
-            --btn-primary-bg: #1f6feb;
-            --btn-primary-border: #1f6feb;
-            --btn-primary-text: #ffffff;
-
-            --btn-process-bg:     #b91c1c;
-            --btn-process-border: #991b1b;
-            --btn-process-hover:  #991b1b;
-
-            --shadow-card:    none;
-            --shadow-focus:   0 0 0 3px rgba(31,111,235,0.3);
-
-            --status-dot:     #1a9e6e;
-            --progress-track: #30363d;
-        }
-
-        /* ── Base ────────────────────────────────────────────────── */
-        * { box-sizing: border-box; }
-
+        /* ── Reset ───────────────────────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; height: 100%; }
         body {
-            background-color: var(--bg-page);
-            padding: 0;
-            margin: 0;
-            font-family: 'DM Sans', "Helvetica Neue", Helvetica, sans-serif;
+            background: var(--bg-page);
+            color: var(--text-primary);
+            font-family: var(--font-body);
             font-size: 14px;
-            color: var(--text-primary);
-            transition: background-color 0.2s, color 0.2s;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            overflow: hidden;
+        }
+        button { font-family: inherit; }
+
+        /* ── App shell ───────────────────────────────────────────── */
+        .app-shell {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: var(--bg-page);
         }
 
-        .tak-container {
-            max-width: 860px;
-            margin: 0 auto;
-            padding: 24px 16px 48px;
-        }
-
-        /* ── Page header ─────────────────────────────────────────── */
-        .tak-header {
+        /* ── Header ──────────────────────────────────────────────── */
+        .app-header {
+            flex: 0 0 var(--header-h);
             display: flex;
             align-items: center;
-            gap: 12px;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border);
+            justify-content: space-between;
+            padding: 0 18px;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border-strong);
         }
-
-        .tak-header-icon {
-            width: 36px;
-            height: 36px;
-            background: var(--accent-green);
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-        }
-
-        .tak-header-icon i {
-            font-size: 16px;
-            color: #fff;
-        }
-
-        .tak-header h1 {
-            margin: 0;
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--text-primary);
-            font-family: 'DM Sans', sans-serif;
-            letter-spacing: -0.2px;
-        }
-
-        .tak-header .version-badge {
-            margin-left: auto;
-            font-size: 11px;
-            color: var(--text-muted);
-            font-family: 'JetBrains Mono', monospace;
-            background: var(--bg-card-header);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 2px 7px;
-        }
-
-        /* ── Theme toggle ────────────────────────────────────────── */
-        .theme-toggle {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            margin-left: 12px;
-            padding: 4px 8px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: var(--bg-card);
-            color: var(--text-secondary);
+        .app-header__title {
+            font-family: var(--font-mono);
             font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            transition: border-color 0.15s, color 0.15s;
-            user-select: none;
-        }
-
-        .theme-toggle:hover {
-            border-color: var(--accent-green);
+            font-weight: 600;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
             color: var(--text-primary);
-        }
-
-        .theme-toggle i {
-            font-size: 13px;
-        }
-
-        /* ── Section cards ───────────────────────────────────────── */
-        .tak-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            margin-bottom: 16px;
-            box-shadow: var(--shadow-card);
-            transition: background 0.2s, border-color 0.2s;
-        }
-
-        .tak-card-header {
-            padding: 10px 16px;
-            border-bottom: 1px solid var(--border);
-            background: var(--bg-card-header);
-            border-radius: 8px 8px 0 0;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
+        }
+        .app-header__title .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: 0 0 8px rgba(0,214,143,0.6);
+            display: inline-block;
+        }
+        .app-header__version {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
         }
 
-        .tak-card-header h2 {
-            margin: 0;
+        /* ── Main two-column layout ──────────────────────────────── */
+        .app-main {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: row;
+            min-height: 0;
+        }
+
+        .control-panel,
+        .field-guide {
+            min-height: 0;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border-strong) transparent;
+        }
+        .control-panel::-webkit-scrollbar,
+        .field-guide::-webkit-scrollbar { width: 8px; }
+        .control-panel::-webkit-scrollbar-track,
+        .field-guide::-webkit-scrollbar-track { background: transparent; }
+        .control-panel::-webkit-scrollbar-thumb,
+        .field-guide::-webkit-scrollbar-thumb {
+            background: var(--border-strong);
+            border-radius: 4px;
+        }
+
+        .control-panel {
+            flex: 0 0 45%;
+            padding: 22px 26px 40px 26px;
+            border-right: 1px solid var(--border-strong);
+        }
+        .field-guide {
+            flex: 0 0 55%;
+            padding: 22px 26px 40px 26px;
+            background: var(--bg-page);
+        }
+
+        @media (max-width: 720px) {
+            body { overflow: auto; }
+            .app-shell { height: auto; min-height: 100vh; }
+            .app-main { flex-direction: column; }
+            .control-panel, .field-guide {
+                flex: 0 0 auto;
+                width: 100%;
+                overflow-y: visible;
+            }
+            .control-panel { border-right: none; border-bottom: 1px solid var(--border-strong); }
+        }
+
+        /* ── Section primitive ───────────────────────────────────── */
+        .section {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            margin-bottom: 18px;
+            box-shadow: var(--shadow-panel);
+        }
+        .section__header {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-elevated);
+        }
+        .section__num {
+            font-family: var(--font-mono);
             font-size: 11px;
             font-weight: 600;
-            color: var(--text-secondary);
+            letter-spacing: 0.15em;
+            color: var(--accent-green);
+            margin-right: 12px;
+        }
+        .section__title {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
-            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-label);
+            flex: 1;
         }
-
-        .tak-card-header .section-num {
-            background: var(--accent-green);
-            color: #fff;
-            border-radius: 4px;
-            width: 20px;
-            height: 20px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            font-weight: 700;
-            flex-shrink: 0;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .tak-card-body {
-            padding: 16px;
+        .section__body {
+            padding: 18px 16px;
         }
 
         /* ── Form elements ───────────────────────────────────────── */
-        .form-group {
-            margin-bottom: 0;
-        }
-
-        .form-group label {
-            font-weight: 500;
-            font-size: 12px;
+        .field-row { margin-bottom: 16px; }
+        .field-row:last-child { margin-bottom: 0; }
+        .field-label {
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
             color: var(--text-label);
             margin-bottom: 6px;
-            display: block;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-family: 'JetBrains Mono', monospace;
         }
-
-        .form-group .help-text {
-            font-size: 11px;
+        .field-hint {
+            font-family: var(--font-body);
+            font-size: 12px;
             color: var(--text-muted);
-            margin-top: 5px;
-            font-family: 'JetBrains Mono', monospace;
+            margin-top: 6px;
+            line-height: 1.45;
         }
-
-        .form-control {
-            border-radius: 6px;
-            border: 1px solid var(--border-input);
-            font-size: 14px;
-            background: var(--bg-input);
-            color: var(--text-primary);
-            padding: 8px 12px;
+        input[type="text"].input {
+            display: block;
             width: 100%;
-            transition: border-color 0.15s, box-shadow 0.15s;
-            font-family: 'DM Sans', sans-serif;
-        }
-
-        .form-control:focus {
-            border-color: var(--accent-blue);
-            box-shadow: var(--shadow-focus);
+            padding: 10px 12px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-input);
+            border-radius: 3px;
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            font-size: 14px;
             outline: none;
+            transition: border-color 0.12s, box-shadow 0.12s;
         }
-
-        .form-control::placeholder {
-            color: var(--text-muted);
+        input[type="text"].input:focus {
+            border-color: var(--accent-green);
+            box-shadow: var(--shadow-focus);
         }
+        input[type="text"].input::placeholder { color: var(--text-muted); }
+        input[type="text"].input:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        /* ── File drop zone ──────────────────────────────────────── */
-        .file-drop-zone {
+        /* ── Photo picker (drop zone) ────────────────────────────── */
+        .drop-zone {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 26px 20px;
+            background: var(--bg-input);
             border: 1px dashed var(--border-input);
-            border-radius: 6px;
-            padding: 24px 16px;
+            border-radius: 3px;
             text-align: center;
-            color: var(--text-muted);
-            font-size: 13px;
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
-            background: var(--bg-card-header);
+            transition: border-color 0.12s, background 0.12s;
         }
-
-        .file-drop-zone:hover {
-            border-color: var(--accent-green);
-            background: var(--accent-green-bg);
-            color: var(--accent-green);
-        }
-
-        .file-drop-zone i {
-            display: block;
-            font-size: 28px;
-            margin-bottom: 8px;
+        .drop-zone:hover { border-color: var(--accent-green-dim); background: var(--bg-hover); }
+        .drop-zone__icon {
+            font-size: 24px;
             color: var(--text-muted);
+            margin-bottom: 8px;
         }
-
-        .file-drop-zone:hover i {
-            color: var(--accent-green);
+        .drop-zone__primary {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-primary);
         }
-
-        .file-drop-zone.has-files {
-            border-color: var(--accent-green);
+        .drop-zone__secondary {
+            font-family: var(--font-body);
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        .drop-zone--has-files {
             border-style: solid;
-            background: var(--accent-green-bg);
-            color: var(--accent-green);
+            border-color: var(--accent-green-dim);
+            background: var(--bg-success-soft);
         }
-
-        .file-drop-zone.has-files i {
-            color: var(--accent-green);
+        .drop-zone--has-files .drop-zone__icon { color: var(--accent-green); }
+        .drop-zone--has-files .drop-zone__primary { color: var(--accent-green); }
+        .drop-zone__file-input {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
         }
 
         /* ── Buttons ─────────────────────────────────────────────── */
-        .btn-process {
-            background-color: var(--btn-process-bg);
-            border: 1px solid var(--btn-process-border);
-            color: #fff;
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 16px;
+            font-family: var(--font-mono);
+            font-size: 11px;
             font-weight: 600;
-            padding: 8px 24px;
-            font-size: 13px;
-            border-radius: 6px;
-            font-family: 'DM Sans', sans-serif;
-            letter-spacing: 0.2px;
-            transition: background 0.15s;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            text-decoration: none;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+            white-space: nowrap;
+            line-height: 1;
         }
 
-        .btn-process:disabled {
+        .btn:disabled, .btn[aria-disabled="true"] {
             opacity: 0.4;
             cursor: not-allowed;
         }
 
-        .btn-process:hover:not(:disabled) {
-            background-color: var(--btn-process-hover);
-            color: #fff;
+        /* Green Buttons: Process and both Download types */
+        .btn--primary, 
+        .btn--download, 
+        .btn--download-alt {
+            background: var(--accent-green);
+            color: var(--text-on-accent);
+            border-color: var(--accent-green);
         }
 
-        /* ── Status section ──────────────────────────────────────── */
-        .status-idle {
-            text-align: center;
-            padding: 28px 24px;
-            color: var(--text-muted);
-            font-size: 13px;
-            font-family: 'JetBrains Mono', monospace;
+        .btn--primary:not(:disabled):hover, 
+        .btn--download:hover, 
+        .btn--download-alt:hover {
+            background: #1ee69e; 
+            border-color: #1ee69e; 
+            color: var(--text-on-accent);
         }
 
-        .status-idle i {
-            display: block;
-            font-size: 28px;
-            margin-bottom: 8px;
-            color: var(--text-muted);
+        /* Solid Red Button: Delete */
+        .btn--danger {
+            background: var(--accent-red);
+            color: var(--text-on-accent);
+            border-color: var(--accent-red);
         }
 
-        .status-job-name {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 14px;
-            font-family: 'DM Sans', sans-serif;
+        .btn--danger:hover {
+            background: #ff7070;
+            border-color: #ff7070;
+            color: var(--text-on-accent);
         }
 
-        .status-phase-label {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-bottom: 5px;
-            display: flex;
-            justify-content: space-between;
-            font-family: 'JetBrains Mono', monospace;
+        /* Outlined Red Button: Cancel Job (keep for Section 02) */
+        .btn--danger-outline {
+            background: transparent;
+            color: var(--accent-red);
+            border-color: var(--accent-red-dim);
         }
 
-        .progress {
-            margin-bottom: 10px;
-            border-radius: 4px;
-            height: 6px;
-            background: var(--progress-track);
-            box-shadow: none;
+        .btn--danger-outline:hover {
+            background: var(--bg-danger-soft);
+            border-color: var(--accent-red);
         }
 
-        .progress-bar {
-            border-radius: 4px;
-            transition: width 0.4s ease;
-            min-width: 0;
-            font-size: 0;  /* hide text — bar is too thin */
-        }
-
-        .progress-bar-warning {
-            background-color: var(--accent-amber);
-        }
-
-        /* ── Processing standby ──────────────────────────────────── */
-        .status-standby {
+        /* Utility classes */
+        .btn--block { width: 100%; }
+        .btn--sm { padding: 7px 11px; font-size: 10px; letter-spacing: 0.13em; }
+        /* ── Status / progress section ───────────────────────────── */
+        .status-row {
             display: flex;
             align-items: center;
             gap: 10px;
-            padding: 14px 16px;
-            margin-top: 12px;
-            color: var(--accent-green);
-            font-size: 13px;
-            font-family: 'JetBrains Mono', monospace;
-            background: var(--bg-standby);
-            border: 1px solid var(--border-accent);
-            border-radius: 6px;
+            margin-bottom: 12px;
         }
-
-        .status-standby::before {
-            content: '';
+        .status-dot {
             width: 8px;
             height: 8px;
-            background: var(--accent-green);
             border-radius: 50%;
-            flex-shrink: 0;
-            animation: pulse-dot 1.6s ease-in-out infinite;
+            background: var(--text-muted);
+            flex: 0 0 8px;
         }
-
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50%       { opacity: 0.4; transform: scale(0.85); }
-        }
-
-        /* ── Status error ────────────────────────────────────────── */
-        .status-error-box {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            background: var(--accent-red-bg);
-            border: 1px solid var(--accent-red);
-            border-radius: 6px;
-            padding: 12px 14px;
-            font-size: 13px;
-            color: var(--accent-red);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .status-error-box i {
-            margin-top: 1px;
-            flex-shrink: 0;
-        }
-
-        /* ── Archive section ─────────────────────────────────────── */
-        .archive-empty {
-            text-align: center;
-            padding: 28px 24px;
-            color: var(--text-muted);
-            font-size: 13px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .archive-empty i {
-            display: block;
-            font-size: 28px;
-            margin-bottom: 8px;
-        }
-
-        #archive-table {
-            margin-bottom: 0;
-            font-size: 13px;
-        }
-
-        #archive-table th {
-            font-size: 10px;
-            color: var(--text-muted);
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.6px;
-            border-bottom: 1px solid var(--border) !important;
-            border-top: none !important;
-            padding: 8px 12px;
-            font-family: 'JetBrains Mono', monospace;
-            background: transparent;
-        }
-
-        #archive-table td {
-            vertical-align: middle;
-            padding: 10px 12px;
-            border-top: 1px solid var(--border) !important;
-            color: var(--text-primary);
-        }
-
-        /* Override Bootstrap table-striped for dark mode */
-        .table-striped > tbody > tr:nth-of-type(odd) {
-            background-color: var(--bg-card-header);
-        }
-
-        .table-striped > tbody > tr:nth-of-type(even) {
-            background-color: transparent;
-        }
-
-        .archive-job-name {
-            font-weight: 500;
-            color: var(--text-primary);
-            font-family: 'DM Sans', sans-serif;
-        }
-
-        .archive-meta {
-            font-size: 11px;
-            color: var(--text-muted);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        /* ── Inline flash messages ───────────────────────────────── */
-        .flash {
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            margin-bottom: 12px;
-            display: none;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .flash.flash-error {
-            background: var(--accent-red-bg);
-            border: 1px solid var(--accent-red);
-            color: var(--accent-red);
-        }
-
-        .flash.flash-success {
-            background: var(--accent-green-bg);
-            border: 1px solid var(--accent-green);
-            color: var(--accent-green);
-        }
-
-        /* ── Action buttons (archive) ────────────────────────────── */
-        .btn-xs {
-            font-size: 11px;
-            padding: 3px 10px;
-            border-radius: 4px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 500;
-            letter-spacing: 0.2px;
-        }
-
-        .btn-success.btn-xs {
+        .status-dot--idle { background: var(--text-muted); }
+        .status-dot--active {
             background: var(--accent-green);
-            border-color: var(--accent-green);
-            color: #fff;
+            box-shadow: 0 0 8px rgba(0,214,143,0.6);
+            animation: pulse 1.6s infinite;
         }
-
-        .btn-success.btn-xs:hover {
-            background: #158a5e;
-            border-color: #158a5e;
-            color: #fff;
+        .status-dot--error { background: var(--accent-red); box-shadow: 0 0 8px rgba(255,87,87,0.6); }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.45; }
         }
-
-        .btn-default.btn-xs {
-            background: transparent;
-            border: 1px solid var(--border-input);
-            color: var(--text-secondary);
-        }
-
-        .btn-default.btn-xs:hover {
-            background: var(--bg-hover);
-            border-color: var(--text-muted);
-            color: var(--text-primary);
-        }
-
-        .btn-danger {
-            background: transparent;
-            border: 1px solid var(--border-input);
-            color: var(--text-secondary);
-            font-size: 12px;
-            padding: 5px 14px;
-            border-radius: 6px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .btn-danger:hover:not(:disabled) {
-            background: var(--accent-red-bg);
-            border-color: var(--accent-red);
-            color: var(--accent-red);
-        }
-
-        .btn-danger:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-
-        .btn-default.btn-sm {
-            background: transparent;
-            border: 1px solid var(--border-input);
-            color: var(--text-secondary);
-            font-size: 12px;
-            padding: 5px 14px;
-            border-radius: 6px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .btn-default.btn-sm:hover {
-            background: var(--bg-hover);
-            color: var(--text-primary);
-        }
-
-        /* ── Divider between form groups ─────────────────────────── */
-        .form-group + .form-group {
-            margin-top: 14px;
-        }
-
-        /* ── Cancel / dismiss button row ─────────────────────────── */
-        .action-row {
-            margin-top: 14px;
-            display: flex;
-            gap: 8px;
-        }
-
-        /* ── Inline info hints ───────────────────────────────────── */
-        .info-hint {
-            display: flex;
-            gap: 8px;
-            align-items: flex-start;
-            margin-top: 6px;
-            padding: 8px 11px;
-            background: var(--accent-blue-bg);
-            border: 1px solid var(--border);
-            border-left: 3px solid var(--accent-blue);
-            border-radius: 5px;
-            font-size: 12px;
-            color: var(--text-secondary);
-            font-family: 'JetBrains Mono', monospace;
-            line-height: 1.6;
-        }
-
-        .info-hint i {
-            color: var(--accent-blue);
-            margin-top: 1px;
-            flex-shrink: 0;
-            font-size: 12px;
-        }
-
-        .info-hint code {
-            background: var(--bg-card-header);
-            border: 1px solid var(--border);
-            border-radius: 3px;
-            padding: 0 4px;
+        .status-text {
+            font-family: var(--font-mono);
             font-size: 11px;
-            color: var(--accent-green);
-            font-family: 'JetBrains Mono', monospace;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-label);
         }
+        .status-text--muted { color: var(--text-muted); }
+
+        .standby {
+            padding: 20px 16px;
+            background: var(--bg-success-soft);
+            border: 1px solid var(--accent-green-dim);
+            border-radius: 3px;
+            text-align: center;
+            margin-top: 6px;
+        }
+        .standby__title {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--accent-green);
+            margin-bottom: 6px;
+        }
+        .standby__sub {
+            font-family: var(--font-body);
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* Upload progress bar */
+        .progress-wrap {
+            margin-top: 6px;
+            padding: 14px 16px;
+            background: var(--bg-info-soft);
+            border: 1px solid #2c4366;
+            border-radius: 3px;
+        }
+        .progress-label {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--accent-blue);
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .progress-track {
+            position: relative;
+            height: 4px;
+            background: rgba(77,159,255,0.18);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            position: absolute;
+            inset: 0 auto 0 0;
+            background: var(--accent-blue);
+            width: 0%;
+            transition: width 0.18s;
+        }
+
+        /* Flash messages */
+        .flash {
+            padding: 10px 14px;
+            border-radius: 3px;
+            font-size: 13px;
+            margin-bottom: 14px;
+            font-family: var(--font-body);
+            display: none;
+        }
+        .flash--error {
+            background: var(--bg-danger-soft);
+            border: 1px solid var(--accent-red-dim);
+            color: #ffb0b0;
+        }
+        .flash__close {
+            float: right;
+            background: transparent;
+            border: none;
+            color: inherit;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 0 0 12px;
+        }
+
+        /* ── Archive table ───────────────────────────────────────── */
+        .archive-empty {
+            padding: 22px 12px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-family: var(--font-body);
+        }
+        .archive-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .archive-table th {
+            text-align: left;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .archive-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+            font-size: 13px;
+        }
+        .archive-table tr:last-child td { border-bottom: none; }
+        .archive-job-name {
+            font-family: var(--font-body);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        .archive-meta {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .archive-actions {
+            display: flex;
+            gap: 6px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+
+        /* ── Node status indicator (v0.7.2) ─────────────────────── */
+        .node-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-right: 14px;
+        }
+        .node-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex: 0 0 7px;
+        }
+        .node-dot--online  { background: var(--accent-green); box-shadow: 0 0 6px rgba(0,214,143,0.5); }
+        .node-dot--offline { background: var(--accent-red);   box-shadow: 0 0 6px rgba(255,87,87,0.5); }
+        .node-dot--unknown { background: var(--text-muted); }
+        .node-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        .node-label--online  { color: var(--accent-green); }
+        .node-label--offline { color: var(--accent-red); }
+
+        /* ── Phase label (v0.7.2) ────────────────────────────────── */
+        .phase-label {
+            margin-top: 10px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--accent-green);
+            text-align: center;
+        }
+        .guide-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 18px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-strong);
+        }
+        .guide-header__title {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--text-label);
+        }
+        .guide-header__icon {
+            color: var(--accent-amber);
+            font-size: 14px;
+        }
+        .guide-section {
+            margin-bottom: 28px;
+        }
+        .guide-section:last-child { margin-bottom: 0; }
+        .guide-section__head {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .guide-section__num {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: var(--accent-green);
+        }
+        .guide-section__title {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-label);
+        }
+        .guide-prose {
+            font-family: var(--font-body);
+            font-size: 13.5px;
+            line-height: 1.55;
+            color: var(--text-secondary);
+        }
+        .guide-prose p { margin: 0 0 10px 0; }
+        .guide-prose p:last-child { margin-bottom: 0; }
+        .guide-prose strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .guide-prose code {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 1px 5px;
+            color: var(--accent-green);
+        }
+        .guide-callout {
+            margin-top: 8px;
+            padding: 10px 12px;
+            background: var(--bg-elevated);
+            border-left: 2px solid var(--accent-amber-dim);
+            border-radius: 0 3px 3px 0;
+            font-size: 12.5px;
+            color: var(--text-secondary);
+        }
+        .guide-callout strong { color: var(--accent-amber); }
     </style>
 </head>
 <body>
 
-<div class="tak-container">
+<div class="app-shell">
 
-    <!-- ── Page Header ──────────────────────────────────────── -->
-    <div class="tak-header">
-        <div class="tak-header-icon">
-            <i class="fa fa-crosshairs"></i>
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Header                                                            -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <header class="app-header">
+        <div class="app-header__title">
+            <span class="dot" aria-hidden="true"></span>
+            TAK&nbsp;Incident&nbsp;Overlay
+            <span class="app-header__version">v{{ plugin_version }}</span>
         </div>
-        <h1>TAK Incident Overlay</h1>
-        <span class="version-badge">v{{ plugin_version }}</span>
-        <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" title="Toggle light/dark mode">
-            <i class="fa fa-moon-o" id="theme-icon"></i>
-            <span id="theme-label">Dark</span>
-        </button>
-    </div>
 
-    <!-- ══════════════════════════════════════════════════════ -->
-    <!-- SECTION 1 — New Job                                    -->
-    <!-- ══════════════════════════════════════════════════════ -->
-    <div class="tak-card" id="new-job-card">
-        <div class="tak-card-header">
-            <span class="section-num">1</span>
-            <h2>New Job</h2>
+        <div style="display:flex; align-items:center; gap:16px;">
+            <div class="node-status">
+                <span id="node-dot" class="node-dot node-dot--unknown"></span>
+                <span id="node-label" class="node-label">node-odx-1 · checking</span>
+            </div>
+            <div class="app-header__powered">powered by webODM</div>
         </div>
-        <div class="tak-card-body">
+    </header>
 
-            <div class="flash flash-error" id="upload-error"></div>
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Main two-column layout                                            -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <main class="app-main">
 
-            <div class="form-group">
-                <label for="incident-name">Incident Name or Number</label>
-                <input
-                    type="text"
-                    id="incident-name"
-                    class="form-control"
-                    placeholder="e.g. Warehouse Fire or 2026-0421"
-                    maxlength="120"
-                    oninput="updateProcessButton()"
-                >
-                <div class="info-hint" style="margin-top:8px;">
-                    <i class="fa fa-info-circle"></i>
-                    <span>
-                        The name you enter becomes the output filename.
-                        Spaces are replaced with underscores and a date-time stamp is appended automatically —
-                        e.g. <code>Warehouse Fire</code> becomes <code>Warehouse_Fire_2026-04-28_1345.mbtiles</code>.
-                        Use a name or number that will be meaningful in the field.
-                    </span>
+        <!-- ─── LEFT: Control Panel ─────────────────────────────── -->
+        <section class="control-panel" aria-label="Control panel">
+
+            <!-- Top-of-panel error flash -->
+            <div id="flash-upload" class="flash flash--error" role="alert"></div>
+
+            <!-- ─── SECTION 1 — Upload ────────────────────────────── -->
+            <div class="section">
+                <div class="section__header">
+                    <span class="section__num">01</span>
+                    <span class="section__title">UPLOAD</span>
                 </div>
-            </div>
+                <div class="section__body">
 
-            <div class="form-group" style="margin-top:14px;">
-                <label>Photos</label>
-                <div class="file-drop-zone" id="drop-zone" onclick="document.getElementById('photo-input').click()">
-                    <i class="fa fa-camera" id="drop-icon"></i>
-                    <span id="file-label">Click to select photos — JPG/JPEG only, 75 max</span>
-                </div>
-                <input
-                    type="file"
-                    id="photo-input"
-                    accept=".jpg,.jpeg"
-                    multiple
-                    style="display:none"
-                    onchange="onFilesSelected(this)"
-                >
-                <div class="help-text" id="file-count-text"></div>
-                <div class="info-hint" style="margin-top:8px;">
-                    <i class="fa fa-info-circle"></i>
-                    <span>
-                        <strong style="color:var(--text-primary);">Format:</strong> JPEG/JPG only. All photos must have GPS EXIF data (standard on drone cameras).<br>
-                        <strong style="color:var(--text-primary);">Limit:</strong> 75 photos maximum per job.<br>
-                        <strong style="color:var(--text-primary);">Resize:</strong> Photos are automatically downscaled to 2048px on the longest side before processing. Original files are not modified. This reduces processing time without meaningfully affecting orthophoto quality.
-                    </span>
-                </div>
-            </div>
-
-            <div style="margin-top: 16px;">
-                <button
-                    class="btn btn-process"
-                    id="process-btn"
-                    disabled
-                    onclick="onProcessClick()"
-                >
-                    <i class="fa fa-cog"></i>&nbsp; Process
-                </button>
-            </div>
-
-        </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════════════════ -->
-    <!-- SECTION 2 — Current Job Status                         -->
-    <!-- ══════════════════════════════════════════════════════ -->
-    <div class="tak-card" id="status-card">
-        <div class="tak-card-header">
-            <span class="section-num">2</span>
-            <h2>Current Job</h2>
-        </div>
-        <div class="tak-card-body">
-
-            <!-- Idle state -->
-            <div class="status-idle" id="status-idle">
-                <i class="fa fa-circle-o"></i>
-                No job running.
-            </div>
-
-            <!-- Active / uploading / processing state -->
-            <div id="status-active" style="display:none;">
-                <div class="status-job-name" id="active-job-name"></div>
-
-                <!-- Upload progress (phase 1) -->
-                <div id="upload-phase">
-                    <div class="status-phase-label">
-                        <span>Uploading photos</span>
-                        <span id="upload-pct-label">0%</span>
+                    <div class="field-row">
+                        <label for="incident-name" class="field-label">Incident Name or Number</label>
+                        <input type="text"
+                               id="incident-name"
+                               class="input"
+                               placeholder="e.g. Warehouse Fire, 2026-0421"
+                               autocomplete="off"
+                               maxlength="80">
+                        <div class="field-hint">Becomes the output filename. Spaces become underscores; a date-time stamp is appended automatically.</div>
                     </div>
-                    <div class="progress">
-                        <div
-                            class="progress-bar progress-bar-warning"
-                            id="upload-bar"
-                            role="progressbar"
-                            style="width:0%"
-                        ></div>
+
+                    <div class="field-row">
+                        <label class="field-label">Photos</label>
+                        <div id="drop-zone" class="drop-zone">
+                            <i class="fa fa-camera drop-zone__icon" id="drop-zone-icon" aria-hidden="true"></i>
+                            <div class="drop-zone__primary" id="drop-zone-primary">Click to select photos</div>
+                            <div class="drop-zone__secondary" id="drop-zone-secondary">JPEG only · GPS-tagged · max 100 photos</div>
+                            <input type="file"
+                                   id="photo-input"
+                                   class="drop-zone__file-input"
+                                   accept="image/jpeg,image/jpg,.jpg,.jpeg"
+                                   multiple
+                                   onchange="onFilesSelected(this)">
+                        </div>
+                    </div>
+
+                    <div class="field-row">
+                        <button type="button"
+                                id="process-btn"
+                                class="btn btn--primary btn--block"
+                                onclick="onProcessClick()"
+                                disabled>
+                            <i class="fa fa-cogs" aria-hidden="true"></i>
+                            <span>Process</span>
+                        </button>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- ─── SECTION 2 — Status ─────────────────────────── -->
+            <div class="section">
+                <div class="section__header">
+                    <span class="section__num">02</span>
+                    <span class="section__title">Status</span>
+                </div>
+                <div class="section__body">
+
+                    <div class="status-row">
+                        <span id="status-dot" class="status-dot status-dot--idle"></span>
+                        <span id="status-text" class="status-text status-text--muted">Idle — awaiting submission</span>
+                    </div>
+
+                    <!-- Upload progress (during file POST) -->
+                    <div id="progress-wrap" class="progress-wrap" style="display:none;">
+                        <div class="progress-label">
+                            <span>Uploading</span>
+                            <span id="progress-pct">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div id="progress-fill" class="progress-fill"></div>
+                        </div>
+                    </div>
+
+                    <!-- Standby panel (during ODM + GDAL) -->
+                    <div id="standby" class="standby" style="display:none;">
+                        <div class="standby__title">Images Processing Now &middot; Standby</div>
+                        <div class="standby__sub">Typical run is 3–5 minutes for 30–70 photos. The page can be left open; status will update on its own.</div>
+                        <div id="phase-label" class="phase-label" style="display:none;"></div>
+                    </div>
+
+                    <!-- Cancel button (only while running) -->
+                    <div id="cancel-wrap" style="display:none; margin-top:14px;">
+                        <button type="button"
+                                class="btn btn--danger-outline btn--sm"
+                                onclick="onCancelClick()">
+                            <i class="fa fa-times" aria-hidden="true"></i>
+                            <span>Cancel Job</span>
+                        </button>
+                    </div>
+
+                    <!-- Error flash -->
+                    <div id="flash-status" class="flash flash--error" role="alert" style="margin-top:14px; margin-bottom:0;"></div>
+
+                </div>
+            </div>
+
+            <!-- ─── SECTION 3 — Downloads ──────────────────────── -->
+            <div class="section">
+                <div class="section__header">
+                    <span class="section__num">03</span>
+                    <span class="section__title">Downloads</span>
+                </div>
+                <div class="section__body">
+
+                    <div id="archive-empty" class="archive-empty">
+                        No completed overlays yet. Files are auto-purged after 72 hours.
+                    </div>
+
+                    <table id="archive-table" class="archive-table" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>Incident</th>
+                                <th>Date</th>
+                                <th>Files</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="archive-tbody"></tbody>
+                    </table>
+
+                </div>
+            </div>
+
+        </section>
+
+        <!-- ─── RIGHT: Field Guide ──────────────────────────────── -->
+        <aside class="field-guide" aria-label="Field guide">
+
+            <div class="guide-header">
+                <i class="fa fa-book guide-header__icon" aria-hidden="true"></i>
+                <span class="guide-header__title">Field Guide</span>
+            </div>
+
+                <!-- ── 1. Image Capture ──────────────────────────── -->
+                <div class="guide-section">
+                   <div class="guide-section__head">
+                     <span class="guide-section__num">01</span>
+                     <span class="guide-section__title">Image Capture</span>
+                 </div>
+                 <div class="guide-prose">
+                     <p>The single biggest factor in a fast, clean run is <strong>flying high enough</strong>. Coverage and ground resolution trade off against each other &mdash; doubling altitude roughly quarters the photo count.</p>
+                     <p>For most incident overlays, <strong>60–100 m AGL</strong> is a good working band. Drop to 30–50 m only when fine detail genuinely matters. Fly higher when you can.</p>
+                     <p><strong>Overlap matters more than total image count.</strong> Aim for at least <strong>75% frontal</strong> and <strong>65% side</strong> overlap. More is better. Most mission-planning apps will calculate this for you; trust their planner over a manual count.</p>
+                        <p><strong>Flight pattern:</strong> Fly a lawnmower grid over the target area. For high-detail jobs where roofline and structure accuracy matters, fly the grid twice with the second pass rotated 90°. Maintain consistent altitude and let the mission planner set overlap automatically. Do not mix altitudes within a single job.</p>
+                        <p><strong>GPS lock</strong> must be solid before takeoff. Take a single image while still on the ground to estabish a baseline. 
+                        <div class="guide-callout">
+                            <strong>Limit:</strong> 100 photos per job. 
+                        </div>
                     </div>
                 </div>
 
-                <!-- Processing standby (phase 2) -->
-                <div id="process-phase" class="status-standby" style="display:none;">
-                    Images Processing Now — Standby
+            <!-- ── 2. Upload &amp; Process ────────────────────── -->
+            <div class="guide-section">
+                <div class="guide-section__head">
+                    <span class="guide-section__num">02</span>
+                    <span class="guide-section__title">Upload &amp; Process</span>
                 </div>
-
-                <div class="action-row">
-                    <button class="btn btn-danger btn-sm" id="cancel-btn" onclick="onCancelClick()">
-                        <i class="fa fa-times"></i> Cancel
-                    </button>
-                </div>
-            </div>
-
-            <!-- Error state -->
-            <div id="status-error" style="display:none;">
-                <div class="status-error-box">
-                    <i class="fa fa-exclamation-circle"></i>
-                    <span>Processing failed — try again and check logs.</span>
-                </div>
-                <div class="action-row">
-                    <button class="btn btn-default btn-sm" onclick="resetToIdle()">
-                        <i class="fa fa-refresh"></i> Dismiss
-                    </button>
+                <div class="guide-prose">
+                    <p>Enter an <strong>incident name or number</strong> in Section 1 &mdash; this becomes the output filename and how the overlay appears in CloudTAK. Use whatever your team will recognize in the field (e.g. <code>Warehouse Fire</code>, <code>MM-12 South Fork</code>) The name chosen will automatically have the date and time it was generated appended to the end of the file name.</p>
+                    <p>Click the photo picker and select your <strong>GPS-tagged JPEG photos</strong>. The picker rejects non-JPEG files and photos missing GPS EXIF before processing starts.</p>
+                    <p>Click <strong>Process</strong>. The upload bar runs first, then the job moves to <strong>Standby</strong> while the processing node builds the orthophoto. <strong>Typical run time is 3–5 minutes</strong> for a 30–70 photo job.</p>
+                    <p>The page can be left open in the background &mdash; status updates on its own. If something goes wrong, the most common cause is a single photo with no GPS data; remove it and re-run.</p>
                 </div>
             </div>
 
-        </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════════════════ -->
-    <!-- SECTION 3 — Completed Overlays Archive                 -->
-    <!-- ══════════════════════════════════════════════════════ -->
-    <div class="tak-card">
-        <div class="tak-card-header">
-            <span class="section-num">3</span>
-            <h2>Completed Overlays</h2>
-        </div>
-        <div class="tak-card-body">
-
-            <div class="archive-empty" id="archive-empty">
-                <i class="fa fa-folder-open-o"></i>
-                No completed overlays yet.
+            <!-- ── 3. Import to TAK ─────────────────────── -->
+            <div class="guide-section">
+                <div class="guide-section__head">
+                    <span class="guide-section__num">03</span>
+                    <span class="guide-section__title">Import to CloudTAK</span>
+                </div>
+                <div class="guide-prose">
+                    <p>When a job completes, two download buttons appear in Section 3: <strong>MBTILES</strong> and <strong>GEOTIFF&nbsp;RGB</strong>. Pick whichever your destination needs. <strong>GEOTIFF</strong> works for most apps. In CloudTAK open the <strong>Overlay Tool</strong> > <strong>"+"</strong> > <strong>"Your Files"</strong>. <strong>"Your Files"</strong> is where the custom overlay files would appear. Use the <strong>"Upload Icon"</strong> to add the GEOTIFF</p>
+                    <div class="guide-callout">
+                        <strong>72-hour purge.</strong> Both files are automatically deleted from the server 72 hours after the job completes. Download what you need before then. Overlays made with sUAS not equipped with an RTK sensor may be up to +/- 10 meters in accuracy but are typically half that.
+                    </div>
+                </div>
             </div>
 
-            <table class="table table-striped" id="archive-table" style="display:none;">
-                <thead>
-                    <tr>
-                        <th>Job Name</th>
-                        <th>Completed</th>
-                        <th>Size</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="archive-tbody">
-                </tbody>
-            </table>
+        </aside>
 
-        </div>
-    </div>
+    </main>
 
-</div><!-- /.tak-container -->
+</div>
 
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
-// Theme
+// TAK Incident Overlay Generator — UI script (v0.7.2)
 // ═══════════════════════════════════════════════════════════════════════════
-function toggleTheme() {
-    var html  = document.documentElement;
-    var isDark = html.getAttribute('data-theme') === 'dark';
-    var next   = isDark ? 'light' : 'dark';
-    html.setAttribute('data-theme', next);
-    try { localStorage.setItem('tak-overlay-theme', next); } catch(e) {}
-    updateThemeButton(next);
-}
+//
+// State machine:
+//   IDLE      → operator fills form, picks photos
+//   UPLOAD    → POST in flight, progress bar visible
+//   PROCESS   → polling /status/<job_id>/, Standby visible
+//   COMPLETE  → polling stops, archive refreshes, return to IDLE
+//   ERROR     → flash visible, return to IDLE
+//
+// All endpoints assume the plugin URL prefix /plugins/tak_incident_overlay/.
+// ═══════════════════════════════════════════════════════════════════════════
 
-function updateThemeButton(theme) {
-    var icon  = document.getElementById('theme-icon');
-    var label = document.getElementById('theme-label');
-    if (theme === 'dark') {
-        icon.className  = 'fa fa-sun-o';
-        label.textContent = 'Light';
-    } else {
-        icon.className  = 'fa fa-moon-o';
-        label.textContent = 'Dark';
-    }
-}
+var POLL_INTERVAL = 5000;
+var pollTimer     = null;
+var activeJobId   = null;
 
-// Apply saved theme on load
-(function() {
-    var saved;
-    try { saved = localStorage.getItem('tak-overlay-theme'); } catch(e) {}
-    var theme = saved || 'light';
-    document.documentElement.setAttribute('data-theme', theme);
-    // Button update deferred to DOMContentLoaded
-})();
+// ── Init ───────────────────────────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════════════════
-// State
-// ═══════════════════════════════════════════════════════════════════════════
-var selectedFiles  = [];
-var MAX_PHOTOS     = 75;
-var activeJobId    = null;
-var pollTimer      = null;
-var POLL_INTERVAL  = 10000;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Page load
-// ═══════════════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', function() {
-    // Sync theme button to current theme
-    var theme = document.documentElement.getAttribute('data-theme') || 'light';
-    updateThemeButton(theme);
+    var nameInput = document.getElementById('incident-name');
+    nameInput.addEventListener('input', updateProcessButton);
+
     loadArchive();
+    setInterval(loadArchive, 60000);
+
+    // Node status — check on load then every 30 seconds
+    checkNodeStatus();
+    setInterval(checkNodeStatus, 30000);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// File picker
-// ═══════════════════════════════════════════════════════════════════════════
+// ── Photo selection ────────────────────────────────────────────────────────
+
 function onFilesSelected(input) {
-    var files = Array.from(input.files);
-    hideFlash('upload-error');
+    hideFlash('flash-upload');
+    var files = Array.prototype.slice.call(input.files || []);
 
     var nonJpeg = files.filter(function(f) {
-        return !f.name.match(/\.(jpg|jpeg)$/i);
+        var n = f.name.toLowerCase();
+        return !(n.endsWith('.jpg') || n.endsWith('.jpeg'));
     });
-    if (nonJpeg.length > 0) {
-        showFlash('upload-error',
-            'Only JPG/JPEG photos are supported. Please remove other file types.');
+
+    if (nonJpeg.length) {
+        showFlash('flash-upload',
+            'Only JPG/JPEG photos are supported. ' + nonJpeg.length + ' file(s) are not JPEG.');
         input.value = '';
-        selectedFiles = [];
         updateDropZone();
         updateProcessButton();
         return;
     }
 
-    if (files.length > MAX_PHOTOS) {
-        showFlash('upload-error',
-            'Maximum ' + MAX_PHOTOS + ' photos per job. You selected ' +
-            files.length + '. Please remove some and try again.');
+    if (files.length > 100) {
+        showFlash('flash-upload',
+            'Maximum 100 photos per job. You selected ' + files.length + '.');
         input.value = '';
-        selectedFiles = [];
         updateDropZone();
         updateProcessButton();
         return;
     }
 
-    selectedFiles = files;
     updateDropZone();
     updateProcessButton();
 }
 
 function updateDropZone() {
-    var zone  = document.getElementById('drop-zone');
-    var icon  = document.getElementById('drop-icon');
-    var label = document.getElementById('file-label');
-    var count = document.getElementById('file-count-text');
+    var input     = document.getElementById('photo-input');
+    var zone      = document.getElementById('drop-zone');
+    var icon      = document.getElementById('drop-zone-icon');
+    var primary   = document.getElementById('drop-zone-primary');
+    var secondary = document.getElementById('drop-zone-secondary');
+    var n         = (input.files || []).length;
 
-    if (selectedFiles.length === 0) {
-        zone.classList.remove('has-files');
-        icon.className = 'fa fa-camera';
-        label.textContent = 'Click to select photos — JPG/JPEG only, 75 max';
-        count.textContent = '';
+    if (n > 0) {
+        zone.classList.add('drop-zone--has-files');
+        icon.className = 'fa fa-check-circle drop-zone__icon';
+        primary.textContent = n + ' photo' + (n === 1 ? '' : 's') + ' selected';
+        secondary.textContent = 'Click again to change selection';
     } else {
-        zone.classList.add('has-files');
-        icon.className = 'fa fa-check-circle';
-        label.textContent = selectedFiles.length +
-            ' photo' + (selectedFiles.length === 1 ? '' : 's') + ' selected';
-        count.textContent = selectedFiles.length + ' of ' + MAX_PHOTOS + ' maximum';
+        zone.classList.remove('drop-zone--has-files');
+        icon.className = 'fa fa-camera drop-zone__icon';
+        primary.textContent = 'Click to select photos';
+        secondary.textContent = 'JPEG only · GPS-tagged · max 100 photos';
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Process button enable / disable
-// ═══════════════════════════════════════════════════════════════════════════
 function updateProcessButton() {
-    var name = document.getElementById('incident-name').value.trim();
-    var btn  = document.getElementById('process-btn');
-    btn.disabled = !(name.length > 0 && selectedFiles.length > 0);
+    var name  = document.getElementById('incident-name').value.trim();
+    var files = (document.getElementById('photo-input').files || []).length;
+    document.getElementById('process-btn').disabled = !(name && files > 0);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Upload + kick off pipeline
-// ═══════════════════════════════════════════════════════════════════════════
+// ── Submit ─────────────────────────────────────────────────────────────────
+
 function onProcessClick() {
-    hideFlash('upload-error');
+    hideFlash('flash-upload');
+    hideFlash('flash-status');
 
-    var name = document.getElementById('incident-name').value.trim();
-    if (!name || selectedFiles.length === 0) return;
+    var name  = document.getElementById('incident-name').value.trim();
+    var files = document.getElementById('photo-input').files || [];
 
-    setFormLocked(true);
+    if (!name) { showFlash('flash-upload', 'Please enter an incident name or number.'); return; }
+    if (!files.length) { showFlash('flash-upload', 'Please select at least one photo.'); return; }
 
     var fd = new FormData();
     fd.append('incident_name', name);
     fd.append('tz_offset', new Date().getTimezoneOffset());
+    for (var i = 0; i < files.length; i++) fd.append('images[]', files[i]);
 
-    for (var i = 0; i < selectedFiles.length; i++) {
-        fd.append('images[]', selectedFiles[i]);
-    }
-
-    showStatusActive(name);
+    setFormLocked(true);
     showUploadPhase();
+    setUploadProgress(0);
 
     var xhr = new XMLHttpRequest();
-
+    xhr.open('POST', '/plugins/tak_incident_overlay/upload/');
     xhr.upload.addEventListener('progress', function(e) {
-        if (e.lengthComputable) {
-            var pct = Math.round((e.loaded / e.total) * 100);
-            setUploadProgress(pct);
-        }
+        if (e.lengthComputable) setUploadProgress(Math.round(e.loaded / e.total * 100));
     });
-
     xhr.addEventListener('load', function() {
-        if (xhr.status === 200) {
-            var resp;
-            try { resp = JSON.parse(xhr.responseText); } catch(e) { resp = null; }
-
-            if (resp && resp.ok) {
-                setUploadProgress(100);
-                activeJobId = resp.job_id;
+        try {
+            var data = JSON.parse(xhr.responseText);
+            if (xhr.status >= 200 && xhr.status < 300 && data.ok) {
+                activeJobId = data.job_id;
                 showProcessPhase();
                 startPolling();
             } else {
-                var msg = (resp && resp.error) ? resp.error : 'Upload failed. Please try again.';
-                showFlash('upload-error', msg);
+                showStatusError();
+                showFlash('flash-status', data.error || 'Upload failed. Please try again.');
                 resetToIdle();
             }
-        } else {
-            showFlash('upload-error', 'Upload failed (HTTP ' + xhr.status + '). Please try again.');
+        } catch (e) {
+            showStatusError();
+            showFlash('flash-status', 'Server returned an unexpected response.');
             resetToIdle();
         }
     });
-
     xhr.addEventListener('error', function() {
-        showFlash('upload-error', 'Network error during upload. Check your connection and try again.');
+        showStatusError();
+        showFlash('flash-status', 'Network error during upload.');
         resetToIdle();
     });
 
-    xhr.open('POST', '/plugins/tak_incident_overlay/upload/');
     var csrf = getCookie('csrftoken');
     if (csrf) xhr.setRequestHeader('X-CSRFToken', csrf);
     xhr.send(fd);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Status polling
-// ═══════════════════════════════════════════════════════════════════════════
+// ── Node status (v0.7.2) ───────────────────────────────────────────────────────
+
+function checkNodeStatus() {
+    fetch('/plugins/tak_incident_overlay/node-status/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok) return;
+            var dot   = document.getElementById('node-dot');
+            var label = document.getElementById('node-label');
+            if (data.online) {
+                dot.className   = 'node-dot node-dot--online';
+                label.className = 'node-label node-label--online';
+                label.textContent = (data.name || 'node') + ' · online';
+            } else {
+                dot.className   = 'node-dot node-dot--offline';
+                label.className = 'node-label node-label--offline';
+                label.textContent = (data.name || 'node') + ' · offline';
+            }
+        })
+        .catch(function() {
+            // Soft-fail — leave dot in unknown/grey state
+        });
+}
+
+// ── Polling ────────────────────────────────────────────────────────────────
+
 function startPolling() {
     pollStatus();
     pollTimer = setInterval(pollStatus, POLL_INTERVAL);
 }
 
 function stopPolling() {
-    if (pollTimer !== null) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-    }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
 function pollStatus() {
@@ -1041,71 +1050,78 @@ function pollStatus() {
         .then(function(data) {
             if (!data.ok) return;
 
-            var status = data.status;
+            // Update phase label whenever a phase is present
+            if (data.phase) updatePhaseLabel(data.phase);
 
-            if (status === 'running') {
-                // keep polling
-
-            } else if (status === 'completed') {
+            if (data.status === 'completed') {
                 stopPolling();
-                activeJobId = null;
-                setUploadProgress(100);
+                updatePhaseLabel('');
+                document.getElementById('status-dot').className = 'status-dot status-dot--idle';
+                document.getElementById('status-text').className = 'status-text';
+                document.getElementById('status-text').textContent = 'Complete · ready to download';
                 setTimeout(function() {
-                    resetToIdle();
                     loadArchive();
-                }, 800);
-
-            } else if (status === 'failed') {
+                    resetToIdle();
+                }, 600);
+            } else if (data.status === 'failed') {
                 stopPolling();
-                activeJobId = null;
+                updatePhaseLabel('');
                 showStatusError();
-
-            } else if (status === 'cancelled') {
+                showFlash('flash-status',
+                    data.error || 'Processing failed — try again and check logs.');
+                resetToIdle();
+            } else if (data.status === 'cancelled') {
                 stopPolling();
-                activeJobId = null;
+                updatePhaseLabel('');
                 resetToIdle();
             }
         })
         .catch(function() {
-            // Network hiccup — keep polling
+            // Soft-fail: keep polling. Network blips during a long job
+            // shouldn't kill the watch.
         });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Cancel
-// ═══════════════════════════════════════════════════════════════════════════
+function updatePhaseLabel(phase) {
+    var el = document.getElementById('phase-label');
+    if (!el) return;
+    if (phase) {
+        el.textContent = phase;
+        el.style.display = '';
+    } else {
+        el.style.display = 'none';
+        el.textContent = '';
+    }
+}
+
 function onCancelClick() {
     if (!activeJobId) return;
-    if (!confirm('Cancel the current job? The photos will be discarded.')) return;
+    if (!confirm('Cancel this job? The current run will be discarded.')) return;
 
     var jobId = activeJobId;
-    document.getElementById('cancel-btn').disabled = true;
-
-    var csrf = getCookie('csrftoken');
+    var csrf  = getCookie('csrftoken');
     fetch('/plugins/tak_incident_overlay/cancel/' + jobId + '/', {
         method: 'POST',
         headers: csrf ? {'X-CSRFToken': csrf} : {},
     })
     .then(function() {
         stopPolling();
-        activeJobId = null;
         resetToIdle();
+        loadArchive();
     })
     .catch(function() {
-        stopPolling();
-        activeJobId = null;
-        resetToIdle();
+        showStatusError();
+        showFlash('flash-status', 'Could not contact server to cancel.');
     });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Archive (Section 3)
-// ═══════════════════════════════════════════════════════════════════════════
+// ── Archive ────────────────────────────────────────────────────────────────
+
 function loadArchive() {
     fetch('/plugins/tak_incident_overlay/jobs/')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.ok) renderArchive(data.jobs);
+            if (data.ok) renderArchive(data.jobs || []);
         })
         .catch(function() {});
 }
@@ -1130,30 +1146,54 @@ function renderArchive(jobs) {
     completed.forEach(function(job) {
         var tr = document.createElement('tr');
 
+        // Incident name (with completion timestamp underneath)
         var tdName = document.createElement('td');
         tdName.innerHTML =
             '<div class="archive-job-name">' + esc(job.display_name) + '</div>';
         tr.appendChild(tdName);
 
+        // Date
         var tdDate = document.createElement('td');
         tdDate.innerHTML =
             '<span class="archive-meta">' + formatDate(job.completed_at) + '</span>';
         tr.appendChild(tdDate);
 
+        // File sizes
+        var hasGeotiff = !!(job.geotiff_filename && job.geotiff_size_bytes);
+        var sizesHtml =
+            '<div class="archive-meta">MBT&nbsp;' + formatSize(job.file_size_bytes) + '</div>';
+        if (hasGeotiff) {
+            sizesHtml +=
+                '<div class="archive-meta">TIF&nbsp;' + formatSize(job.geotiff_size_bytes) + '</div>';
+        }
         var tdSize = document.createElement('td');
-        tdSize.innerHTML =
-            '<span class="archive-meta">' + formatSize(job.file_size_bytes) + '</span>';
+        tdSize.innerHTML = sizesHtml;
         tr.appendChild(tdSize);
 
+        // Actions — two download buttons + delete
         var tdActions = document.createElement('td');
-        tdActions.style.whiteSpace = 'nowrap';
-        tdActions.innerHTML =
+        var actionsHtml = '<div class="archive-actions">';
+
+        actionsHtml +=
             '<a href="/plugins/tak_incident_overlay/download/' + esc(job.job_id) + '/" ' +
-               'class="btn btn-success btn-xs" style="margin-right:6px;">' +
-               '<i class="fa fa-download"></i> Download</a>' +
-            '<button class="btn btn-default btn-xs" ' +
-               'onclick="onDeleteClick(\'' + esc(job.job_id) + '\')">' +
-               '<i class="fa fa-trash-o"></i> Delete</button>';
+               'class="btn btn--download btn--sm" download>' +
+               '<i class="fa fa-download"></i><span>MBTILES</span></a>';
+
+        if (hasGeotiff) {
+            actionsHtml +=
+                '<a href="/plugins/tak_incident_overlay/download-geotiff/' + esc(job.job_id) + '/" ' +
+                   'class="btn btn--download-alt btn--sm" download>' +
+                   '<i class="fa fa-download"></i><span>GeoTIFF&nbsp;RGB</span></a>';
+        }
+
+        actionsHtml +=
+            '<button class="btn btn--danger btn--sm" ' +
+               'onclick="onDeleteClick(\'' + esc(job.job_id) + '\')" ' +
+               'title="Delete">' +
+               '<i class="fa fa-trash-o"></i></button>';
+
+        actionsHtml += '</div>';
+        tdActions.innerHTML = actionsHtml;
         tr.appendChild(tdActions);
 
         tbody.appendChild(tr);
@@ -1162,122 +1202,133 @@ function renderArchive(jobs) {
 
 function onDeleteClick(jobId) {
     if (!confirm('Delete this overlay? The file cannot be recovered.')) return;
-
     var csrf = getCookie('csrftoken');
     fetch('/plugins/tak_incident_overlay/delete/' + jobId + '/', {
         method: 'POST',
         headers: csrf ? {'X-CSRFToken': csrf} : {},
     })
     .then(function(r) { return r.json(); })
-    .then(function(data) {
-        if (data.ok) loadArchive();
-    })
+    .then(function(data) { if (data.ok) loadArchive(); })
     .catch(function() {});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UI state helpers
 // ═══════════════════════════════════════════════════════════════════════════
+
 function setFormLocked(locked) {
     document.getElementById('incident-name').disabled = locked;
     document.getElementById('photo-input').disabled   = locked;
     document.getElementById('process-btn').disabled   = locked;
-    document.getElementById('drop-zone').style.pointerEvents = locked ? 'none' : '';
-    document.getElementById('drop-zone').style.opacity = locked ? '0.5' : '';
+    var zone = document.getElementById('drop-zone');
+    zone.style.pointerEvents = locked ? 'none' : '';
+    zone.style.opacity       = locked ? '0.55' : '';
 }
 
-function showStatusActive(jobName) {
-    document.getElementById('status-idle').style.display   = 'none';
-    document.getElementById('status-error').style.display  = 'none';
-    document.getElementById('status-active').style.display = '';
-    document.getElementById('active-job-name').textContent = jobName;
-    document.getElementById('cancel-btn').disabled = false;
+function showStatusActive(label) {
+    var dot  = document.getElementById('status-dot');
+    var text = document.getElementById('status-text');
+    dot.className  = 'status-dot status-dot--active';
+    text.className = 'status-text';
+    text.textContent = label || 'Running';
 }
 
 function showUploadPhase() {
-    document.getElementById('upload-phase').style.display  = '';
-    document.getElementById('process-phase').style.display = 'none';
+    document.getElementById('progress-wrap').style.display = '';
+    document.getElementById('standby').style.display       = 'none';
+    document.getElementById('cancel-wrap').style.display   = 'none';
+    showStatusActive('Uploading');
 }
 
 function showProcessPhase() {
-    setUploadProgress(100);
-    document.getElementById('process-phase').style.display = '';
+    document.getElementById('progress-wrap').style.display = 'none';
+    document.getElementById('standby').style.display       = '';
+    document.getElementById('cancel-wrap').style.display   = '';
+    showStatusActive('Processing');
 }
 
 function showStatusError() {
-    document.getElementById('status-active').style.display = 'none';
-    document.getElementById('status-idle').style.display   = 'none';
-    document.getElementById('status-error').style.display  = '';
-    setFormLocked(false);
+    var dot  = document.getElementById('status-dot');
+    var text = document.getElementById('status-text');
+    dot.className  = 'status-dot status-dot--error';
+    text.className = 'status-text';
+    text.textContent = 'Error';
 }
 
 function resetToIdle() {
-    stopPolling();
-    document.getElementById('status-active').style.display = 'none';
-    document.getElementById('status-error').style.display  = 'none';
-    document.getElementById('status-idle').style.display   = '';
-
     setFormLocked(false);
+    document.getElementById('progress-wrap').style.display = 'none';
+    document.getElementById('standby').style.display       = 'none';
+    document.getElementById('cancel-wrap').style.display   = 'none';
+    updatePhaseLabel('');
+    document.getElementById('photo-input').value = '';
     document.getElementById('incident-name').value = '';
-    document.getElementById('photo-input').value   = '';
-    selectedFiles = [];
     updateDropZone();
     updateProcessButton();
+    activeJobId = null;
+    setTimeout(function() {
+        var dot  = document.getElementById('status-dot');
+        var text = document.getElementById('status-text');
+        if (dot.classList.contains('status-dot--error')) return;  // keep error visible
+        dot.className  = 'status-dot status-dot--idle';
+        text.className = 'status-text status-text--muted';
+        text.textContent = 'Idle — awaiting submission';
+    }, 800);
 }
 
 function setUploadProgress(pct) {
-    var bar   = document.getElementById('upload-bar');
-    var label = document.getElementById('upload-pct-label');
-    bar.style.width   = pct + '%';
-    label.textContent = pct + '%';
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-pct').textContent  = pct + '%';
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Flash messages
-// ═══════════════════════════════════════════════════════════════════════════
 function showFlash(id, msg) {
     var el = document.getElementById(id);
-    el.textContent   = msg;
+    el.innerHTML =
+        '<button class="flash__close" onclick="hideFlash(\'' + id + '\')" aria-label="Dismiss">&times;</button>' +
+        esc(msg);
     el.style.display = '';
 }
 
 function hideFlash(id) {
-    document.getElementById(id).style.display = 'none';
+    var el = document.getElementById(id);
+    el.style.display = 'none';
+    el.innerHTML = '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Utilities
 // ═══════════════════════════════════════════════════════════════════════════
+
 function getCookie(name) {
-    var value = '; ' + document.cookie;
-    var parts = value.split('; ' + name + '=');
-    if (parts.length === 2) return parts.pop().split(';').shift();
-    return null;
+    var m = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+    return m ? decodeURIComponent(m[2]) : null;
 }
 
-function esc(str) {
-    return String(str)
+function esc(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function formatDate(iso) {
-    if (!iso) return '—';
-    try {
-        var d = new Date(iso);
-        return d.toLocaleDateString() + ' ' +
-               d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-    } catch(e) {
-        return iso;
-    }
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+           ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
 function formatSize(bytes) {
-    if (!bytes) return '—';
+    if (bytes === null || bytes === undefined) return '—';
+    if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 </script>
 

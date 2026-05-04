@@ -1,5 +1,5 @@
 """
-pipeline.py — TAK Incident Overlay plugin (v0.6.0)
+pipeline.py — TAK Incident Overlay plugin (v0.7.2)
 Async WebODM task creation, polling, and GDAL export pipeline.
 
 Entry point:  start(job_id, saved_paths)
@@ -28,6 +28,21 @@ Design decisions:
   - One new WebODM project per job (cleaner isolation, easier cleanup)
   - Delete WebODM project on both success and failure (disk space matters)
 
+v0.7.2 changes vs v0.7.1:
+  - Phase tracking: archive.update_job(phase=...) called at each pipeline
+    transition so the frontend can display discrete state labels rather than
+    a static Standby message. Phases: Queued → Processing → Finalizing →
+    Reprojecting → Exporting GeoTIFF → Building MBTiles → Building Overviews.
+
+v0.7.1 changes vs v0.6.0:
+  - Zoom range widened from 15–21
+      * gdal_translate -outsize 65%  → base zoom 21
+      * gdaladdo factor list adds 256  → reaches zoom 13
+  - New _export_rgb_geotiff() step produces a 4-band RGBA GeoTIFF in EPSG:4326
+    alongside the MBTiles. Useful for QGIS/ArcGIS/TAK server tile workflows
+    that prefer plain GeoTIFF. LZW + TILED
+    keeps the file workable.
+
 Pre-stage path note (Session 7):
   WebODM's Task.process() scans the task ROOT directory, not an images/
   subdirectory:
@@ -40,7 +55,7 @@ Pre-stage path note (Session 7):
   <task_root>/assets/odm_orthophoto/odm_orthophoto.tif — no collision.
 
 TASK_OPTIONS rationale (v0.6.0 — simplified from v0.5.1):
-  Investigation on the M715q showed that the native WebODM UI run used only:
+  Investigation on a reference WebODM instance showed that the native WebODM UI run used only:
       auto-boundary:true   — crop output to actual flight area, not bounding box
       fast-orthophoto:true — skip MVS densification (~80% time reduction)
   with all other settings left at NodeODX defaults. That 37-image run completed
@@ -119,12 +134,13 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
          pending_action=RESIZE — worker resizes images before ODM dispatch
       4. Poll until task reaches a terminal state
       5. Locate the orthophoto produced by WebODM/ODM
-      6. gdalwarp  — reproject to EPSG:4326
-      7. gdal_translate -of MBTiles  — convert to raster tiles
-      8. gdaladdo  — build zoom pyramid (required for non-blank client display)
-      9. Mark job completed / failed in archive
-     10. Delete WebODM project + task (always — disk space)
-     11. Delete working directory (always)
+      6. gdalwarp  — reproject to EPSG:4326 (produces wgs84.tif)
+      7. gdal_translate — 4-band RGBA GeoTIFF
+      8. gdal_translate -of MBTiles  — convert to raster tiles
+      9. gdaladdo  — build zoom pyramid (required for non-blank client display)
+     10. Mark job completed / failed in archive
+     11. Delete WebODM project + task (always — disk space)
+     12. Delete working directory (always)
     """
     # =====================================================================
     # ALL imports inside — see module docstring
@@ -163,7 +179,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
     # =====================================================================
     # TASK_OPTIONS — minimal proven set (v0.6.0)
     #
-    # Validated against native WebODM UI run on M715q:
+    # Validated against native WebODM UI run on reference hardware:
     #   37 images, auto-boundary:true + fast-orthophoto:true only
     #   Completed in <3 min, good quality output
     #
@@ -192,7 +208,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
           -t_srs EPSG:4326          All TAK clients expect WGS84
           -dstalpha                 Preserves the alpha mask from the 4-band source
           -tr 0.000000449           Locks output pixel size in degrees; calibrated for
-                                    ~61°N Alaska (≈ 2.5 cm/px). v2: compute dynamically
+                                    mid-latitude deployment (≈ 2.5 cm/px). v2: compute dynamically from source GSD and centroid latitude
                                     from source GSD and centroid latitude.
           -co COMPRESS=LZW          Efficient intermediate file
           -co TILED=YES             Required for large rasters
@@ -216,6 +232,30 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         if result.stderr:
             logger.debug(f"[TAK] gdalwarp stderr: {result.stderr.strip()}")
 
+    def _export_rgb_geotiff(wgs84_tif, output_geotiff):
+        """
+        Export the WGS84 reprojected raster as a 4-band RGBA GeoTIFF.
+
+        gdalwarp -dstalpha produces a 4-band output where band 4 is already
+        typed as alpha in the TIFF metadata. Passing no -b selectors copies
+        all 4 bands intact — the alpha boundary is preserved automatically.
+        No -co ALPHA=YES needed (not a valid GeoTIFF creation option).
+        """
+        result = subprocess.run(
+            [
+                'gdal_translate',
+                '-co', 'COMPRESS=LZW',
+                '-co', 'TILED=YES',
+                wgs84_tif,
+                output_geotiff,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stderr:
+            logger.debug(f"[TAK] gdal_translate (geotiff) stderr: {result.stderr.strip()}")
+
     def _convert_to_mbtiles(wgs84_tif, output_mbtiles):
         """
         Convert WGS84 GeoTIFF to MBTiles raster format.
@@ -225,8 +265,12 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
           -co TILE_FORMAT=PNG       Preserves alpha channel for irregular flight boundaries
           -co ZOOM_LEVEL_STRATEGY=UPPER
                                     Selects zoom at or above native resolution
-          -outsize 50% 50%          Downsamples to zoom 21 (~29 MB); workaround for
-                                    ZOOM_LEVEL creation option not supported in GDAL 3.4.1.
+          -outsize 65% 65%          Downsamples,
+                                    landing the base tile layer at zoom 21.
+                                    Combined with the factor-64 overview, this gives
+                                    the file a 13–21 zoom range. Workaround for the
+                                    ZOOM_LEVEL creation option not being supported in
+                                    GDAL 3.4.1.
 
         NOTE: Do NOT add -co ZOOM_LEVEL=N here — not supported in GDAL 3.4.1 and
         will produce a Warning 6 while silently ignoring the option.
@@ -237,7 +281,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
                 '-of', 'MBTiles',
                 '-co', 'TILE_FORMAT=PNG',
                 '-co', 'ZOOM_LEVEL_STRATEGY=UPPER',
-                '-outsize', '50%', '50%',
+                '-outsize', '65%', '65%',
                 wgs84_tif,
                 output_mbtiles,
             ],
@@ -253,17 +297,20 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         Build zoom pyramid for the MBTiles file.
 
         Required — without overview levels, TAK clients display blank tiles when
-        the operator zooms out past the base zoom level (typically zoom 21 after
-        -outsize 50%). Overview factors 2 4 8 16 32 cover zoom levels 16–20.
+        the operator zooms out past the base zoom level. With v0.7.1's 65% outsize,
+        the base zoom is 21, and overview factors 2 4 8 16 32 64 128 256 cover zoom
+        levels 13–19. Final coverage: zooms 13–20.
 
-        v2: if zoom 14–15 shows blank tiles in the field, add factors 64 128.
+        Field tile range comparison:
+          v0.6 base 21, factors 2..32   → zooms 16..21
+          v0.7.1 base 21, factors 2..256   → zooms 13..21
         """
         result = subprocess.run(
             [
                 'gdaladdo',
                 '-r',    'average',
                 mbtiles_path,
-                '2', '4', '8', '16', '32',
+                '2', '4', '8', '16', '32', '64',  '128', '256',
             ],
             check=True,
             capture_output=True,
@@ -378,7 +425,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         )
 
         # Record task ID so status_view can surface live progress to the frontend
-        archive.update_job(job_id, webodm_task_id=str(task.id))
+        archive.update_job(job_id, webodm_task_id=str(task.id), phase='Queued')
         logger.info(
             f"[TAK] {job_id}: Created WebODM task {task.id} — "
             f"{len(saved_paths)} images staged, resize to {RESIZE_TO}px queued"
@@ -395,6 +442,8 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
             f"[TAK] {job_id}: Polling task {task.id} every {POLL_INTERVAL}s"
         )
 
+        _phase_processing_set = False   # guard: only set Processing phase once
+
         while True:
             time.sleep(POLL_INTERVAL)
             task.refresh_from_db()
@@ -406,12 +455,18 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
                 f"[TAK] {job_id}: status={status} progress={progress:.1%}"
             )
 
+            # Transition to Processing once the node picks up the task
+            if not _phase_processing_set and status == TASK_RUNNING:
+                archive.update_job(job_id, phase='Processing')
+                _phase_processing_set = True
+                logger.info(f"[TAK] {job_id}: Phase → Processing")
+
             if status not in TERMINAL_STATES:
-                # Still running (None / QUEUED / RUNNING) — keep waiting
                 continue
 
             if status == TASK_COMPLETED:
-                logger.info(f"[TAK] {job_id}: WebODM task completed")
+                archive.update_job(job_id, phase='Finalizing')
+                logger.info(f"[TAK] {job_id}: WebODM task completed — Phase → Finalizing")
                 break
 
             # FAILED or CANCELLED
@@ -441,32 +496,55 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         logger.info(f"[TAK] {job_id}: Orthophoto located at {ortho_path}")
 
         # ------------------------------------------------------------------
-        # Steps 6–8 — GDAL pipeline (locked from Spike 2)
+        # Steps 6–9 — GDAL pipeline
+        #
+        # v0.7.0 adds a parallel RGB GeoTIFF deliverable derived from the
+        # same WGS84 reprojection. Both outputs land in the archive
+        # directory (NOT working_dir) so they survive the cleanup step.
         # ------------------------------------------------------------------
         working_dir  = archive.get_working_dir(job_id)
         wgs84_tif    = os.path.join(working_dir, 'wgs84.tif')
         mbtiles_path = archive.get_mbtiles_path(job)
+        geotiff_path = archive.get_geotiff_path(job)
 
+        archive.update_job(job_id, phase='Reprojecting')
+        logger.info(f"[TAK] {job_id}: Phase → Reprojecting")
         _reproject_to_wgs84(ortho_path, wgs84_tif)
         logger.info(f"[TAK] {job_id}: Reprojection complete → {wgs84_tif}")
 
+        archive.update_job(job_id, phase='Exporting GeoTIFF')
+        logger.info(f"[TAK] {job_id}: Phase → Exporting GeoTIFF")
+        _export_rgb_geotiff(wgs84_tif, geotiff_path)
+        logger.info(f"[TAK] {job_id}: GeoTIFF export complete → {geotiff_path}")
+
+        archive.update_job(job_id, phase='Building MBTiles')
+        logger.info(f"[TAK] {job_id}: Phase → Building MBTiles")
         _convert_to_mbtiles(wgs84_tif, mbtiles_path)
         logger.info(f"[TAK] {job_id}: MBTiles conversion complete → {mbtiles_path}")
 
+        archive.update_job(job_id, phase='Building Overviews')
+        logger.info(f"[TAK] {job_id}: Phase → Building Overviews")
         _build_overviews(mbtiles_path)
         logger.info(f"[TAK] {job_id}: Zoom pyramid built")
 
-        # Sanity check — output must exist and be non-empty
+        # Sanity check — both outputs must exist and be non-empty
         if not os.path.exists(mbtiles_path) or os.path.getsize(mbtiles_path) == 0:
             raise RuntimeError(
                 "MBTiles file missing or empty after GDAL pipeline. "
                 "Check disk space and GDAL logs above."
             )
+        if not os.path.exists(geotiff_path) or os.path.getsize(geotiff_path) == 0:
+            raise RuntimeError(
+                "GeoTIFF file missing or empty after GDAL pipeline. "
+                "Check disk space and GDAL logs above."
+            )
 
-        file_size_mb = os.path.getsize(mbtiles_path) / 1024 / 1024
-        archive.mark_completed(job_id, mbtiles_path)
+        mbtiles_mb = os.path.getsize(mbtiles_path) / 1024 / 1024
+        geotiff_mb = os.path.getsize(geotiff_path) / 1024 / 1024
+        archive.mark_completed(job_id, mbtiles_path, geotiff_path)
         logger.info(
-            f"[TAK] {job_id}: Pipeline complete — {file_size_mb:.1f} MB at {mbtiles_path}"
+            f"[TAK] {job_id}: Pipeline complete — MBTiles {mbtiles_mb:.1f} MB, "
+            f"GeoTIFF {geotiff_mb:.1f} MB"
         )
 
     except subprocess.CalledProcessError as exc:

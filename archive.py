@@ -1,5 +1,5 @@
 """
-archive.py — TAK Incident Overlay
+archive.py — TAK Incident Overlay (v0.7.0)
 Job index management, archive directory, and 72-hour auto-purge.
 
 Directory layout (all under settings.MEDIA_ROOT):
@@ -7,22 +7,25 @@ Directory layout (all under settings.MEDIA_ROOT):
     ├── index.json                        ← job records
     ├── working/<job_id>/                 ← temp space during processing
     │   ├── images/                       ← uploaded photos
-    │   ├── wgs84.tif                     ← GDAL intermediate
-    │   └── output.mbtiles               ← pre-move output
-    └── <sanitized_display_name>.mbtiles  ← final deliverables (one per job)
+    │   └── wgs84.tif                     ← GDAL intermediate (deleted on cleanup)
+    ├── <sanitized_display_name>.mbtiles  ← final MBTiles deliverable (one per job)
+    └── <sanitized_display_name>.tif      ← final RGB GeoTIFF deliverable (one per job, v0.7+)
 
 Job record schema:
     {
-        "job_id":           str (UUID4),
-        "incident_name":    str (operator input),
-        "display_name":     str ("{incident_name} YYYY-MM-DD HHMM"),
-        "filename":         str ("{display_name}.mbtiles", filesystem-safe),
-        "status":           "running" | "completed" | "failed" | "cancelled",
-        "created_at":       str (ISO 8601, UTC),
-        "completed_at":     str | null,
-        "webodm_task_id":   int | null,
-        "file_size_bytes":  int | null,
-        "error":            str | null
+        "job_id":              str (UUID4),
+        "incident_name":       str (operator input),
+        "display_name":        str ("{incident_name} YYYY-MM-DD HHMM"),
+        "filename":            str ("{display_name}.mbtiles", filesystem-safe),
+        "geotiff_filename":    str ("{display_name}.tif",     filesystem-safe),  # v0.7+
+        "status":              "running" | "completed" | "failed" | "cancelled",
+        "phase":               str (current processing phase label, v0.7.2+),
+        "created_at":          str (ISO 8601, UTC),
+        "completed_at":        str | null,
+        "webodm_task_id":      int | null,
+        "file_size_bytes":     int | null,   # MBTiles size
+        "geotiff_size_bytes":  int | null,   # RGB GeoTIFF size (v0.7+)
+        "error":               str | null
     }
 """
 
@@ -78,6 +81,17 @@ def get_images_dir(job_id):
 def get_mbtiles_path(job):
     """Return the full path to the final MBTiles file for a completed job."""
     return os.path.join(get_archive_dir(), job['filename'])
+
+
+def get_geotiff_path(job):
+    """
+    Return the full path to the final RGB GeoTIFF file for a completed job.
+    Returns None if this job pre-dates v0.7 and has no geotiff_filename.
+    """
+    name = job.get('geotiff_filename')
+    if not name:
+        return None
+    return os.path.join(get_archive_dir(), name)
 
 
 def cleanup_working_dir(job_id):
@@ -154,19 +168,24 @@ def create_job(incident_name, tz_offset_minutes=0):
     utc_now  = datetime.now(timezone.utc)
     local_dt = utc_now + timedelta(minutes=tz_offset_minutes)
     display_name = '{} {}'.format(incident_name, local_dt.strftime('%Y-%m-%d %H%M'))
-    filename = '{}.mbtiles'.format(_sanitize_filename(display_name))
+    safe_base = _sanitize_filename(display_name)
+    filename         = '{}.mbtiles'.format(safe_base)
+    geotiff_filename = '{}.tif'.format(safe_base)
 
     record = {
-        'job_id':          job_id,
-        'incident_name':   incident_name,
-        'display_name':    display_name,
-        'filename':        filename,
-        'status':          'running',
-        'created_at':      _now_iso(),
-        'completed_at':    None,
-        'webodm_task_id':  None,
-        'file_size_bytes': None,
-        'error':           None,
+        'job_id':             job_id,
+        'incident_name':      incident_name,
+        'display_name':       display_name,
+        'filename':           filename,
+        'geotiff_filename':   geotiff_filename,
+        'status':             'running',
+        'phase':              'Queued',
+        'created_at':         _now_iso(),
+        'completed_at':       None,
+        'webodm_task_id':     None,
+        'file_size_bytes':    None,
+        'geotiff_size_bytes': None,
+        'error':              None,
     }
 
     path = _ensure_index()
@@ -242,22 +261,40 @@ def get_running_job():
     return None
 
 
-def mark_completed(job_id, mbtiles_path):
+def mark_completed(job_id, mbtiles_path, geotiff_path=None):
     """
-    Mark a job as completed. Records file size from the output file.
+    Mark a job as completed. Records file sizes from the output files.
+
+    Args:
+        job_id        (str): Job UUID.
+        mbtiles_path  (str): Path to the final MBTiles file (required).
+        geotiff_path  (str, optional): Path to the final RGB GeoTIFF file.
+                                       Pass None to skip GeoTIFF size recording
+                                       (e.g. if the GeoTIFF step was skipped).
     """
     try:
-        size = os.path.getsize(mbtiles_path)
+        mbtiles_size = os.path.getsize(mbtiles_path)
     except OSError:
-        size = None
+        mbtiles_size = None
+
+    geotiff_size = None
+    if geotiff_path:
+        try:
+            geotiff_size = os.path.getsize(geotiff_path)
+        except OSError:
+            geotiff_size = None
 
     update_job(
         job_id,
         status='completed',
         completed_at=_now_iso(),
-        file_size_bytes=size,
+        file_size_bytes=mbtiles_size,
+        geotiff_size_bytes=geotiff_size,
     )
-    log.info('TAK Overlay: job %s completed, %s bytes', job_id, size)
+    log.info(
+        'TAK Overlay: job %s completed — mbtiles %s bytes, geotiff %s bytes',
+        job_id, mbtiles_size, geotiff_size,
+    )
 
 
 def mark_failed(job_id, error_message):
@@ -298,6 +335,11 @@ def delete_job(job_id):
                 if os.path.exists(mbtiles):
                     os.remove(mbtiles)
                     log.info('TAK Overlay: deleted MBTiles for job %s', job_id)
+                # Remove GeoTIFF (v0.7+)
+                geotiff = get_geotiff_path(target)
+                if geotiff and os.path.exists(geotiff):
+                    os.remove(geotiff)
+                    log.info('TAK Overlay: deleted GeoTIFF for job %s', job_id)
                 # Remove working dir
                 cleanup_working_dir(job_id)
                 # Remove from index
@@ -336,6 +378,9 @@ def purge_expired_jobs():
                 mbtiles = get_mbtiles_path(job)
                 if os.path.exists(mbtiles):
                     os.remove(mbtiles)
+                geotiff = get_geotiff_path(job)
+                if geotiff and os.path.exists(geotiff):
+                    os.remove(geotiff)
                 cleanup_working_dir(job['job_id'])
                 log.info('TAK Overlay: purged expired job %s ("%s")',
                          job['job_id'], job['display_name'])

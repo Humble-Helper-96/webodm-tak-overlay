@@ -16,12 +16,12 @@ class Plugin(PluginBase):
         @login_required
         def index(request):
             return render(request, self.template_path("app.html"), {
-                'plugin_version': '0.5.1',
+                'plugin_version': '0.7.2',
             })
 
         @login_required
         def ping(request):
-            return JsonResponse({'status': 'ok', 'version': '0.5.1'})
+            return JsonResponse({'status': 'ok', 'version': '0.7.2'})
 
         return [
             # ── UI ──────────────────────────────────────────────────
@@ -33,6 +33,10 @@ class Plugin(PluginBase):
             MountPoint('jobs/$',                         api.jobs_view),
             MountPoint('status/(?P<job_id>[^/]+)/$',     api.status_view),
             MountPoint('cancel/(?P<job_id>[^/]+)/$',     api.cancel_view),
-            MountPoint('download/(?P<job_id>[^/]+)/$',   api.download_view),
-            MountPoint('delete/(?P<job_id>[^/]+)/$',     api.delete_view),
+            MountPoint('download/(?P<job_id>[^/]+)/$',          api.download_view),
+            MountPoint('download-geotiff/(?P<job_id>[^/]+)/$',  api.download_geotiff_view),
+            MountPoint('delete/(?P<job_id>[^/]+)/$',            api.delete_view),
+
+            # ── Infrastructure status ────────────────────────────────
+            MountPoint('node-status/$',                  api.node_status_view),
         ]
