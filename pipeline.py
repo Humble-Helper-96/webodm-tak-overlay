@@ -94,21 +94,29 @@ logger = logging.getLogger('app.plugins.tak_incident_overlay')
 # Public entry point — called by api.py from the webapp container
 # ---------------------------------------------------------------------------
 
-def start(job_id, saved_paths):
+def start(job_id, saved_paths, retain_task=False, quality_mode=False):
     """
     Kick off the async pipeline.  Returns immediately — all real work happens
     in _run_pipeline() via Celery in the worker container.
 
     Args:
-        job_id      (str): UUID from archive.create_job()
-        saved_paths (list[str]): Absolute paths to uploaded JPEG images on disk,
-                                  inside archive.get_images_dir(job_id).
+        job_id        (str): UUID from archive.create_job()
+        saved_paths   (list[str]): Absolute paths to uploaded JPEG images on disk,
+                                    inside archive.get_images_dir(job_id).
+        retain_task   (bool): If True, the WebODM project is NOT deleted after
+                               the pipeline completes. It stays in WebODM for
+                               up to 72 hours until purge_expired_jobs() cleans it.
+        quality_mode  (bool): If True, disables fast-orthophoto and runs the full
+                               SfM pipeline for a higher-quality 2D orthophoto.
+                               Runtime ~15–25 min vs ~3–5 min for standard mode.
     """
     from app.plugins.worker import run_function_async
     logger.info(
         f"[TAK] {job_id}: Queuing pipeline with {len(saved_paths)} images"
+        f"{' (retain_task=True)' if retain_task else ''}"
+        f"{' (quality_mode=True)' if quality_mode else ''}"
     )
-    run_function_async(_run_pipeline, job_id, saved_paths)
+    run_function_async(_run_pipeline, job_id, saved_paths, retain_task, quality_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +125,7 @@ def start(job_id, saved_paths):
 # See the module-level docstring for the rationale.
 # ---------------------------------------------------------------------------
 
-def _run_pipeline(job_id, saved_paths, progress_callback=None):
+def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False, progress_callback=None):
     """
     Full pipeline — runs asynchronously inside the Celery worker container.
 
@@ -183,12 +191,14 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
     #   37 images, auto-boundary:true + fast-orthophoto:true only
     #   Completed in <3 min, good quality output
     #
-    # Everything else left to NodeODX defaults.
+    # quality_mode (v0.7.7): omits fast-orthophoto, running the full SfM
+    # pipeline instead. All other options left to NodeODX defaults.
     # =====================================================================
     TASK_OPTIONS = [
-        {'name': 'auto-boundary',   'value': True},
-        {'name': 'fast-orthophoto', 'value': True},
+        {'name': 'auto-boundary', 'value': True},
     ]
+    if not quality_mode:
+        TASK_OPTIONS.append({'name': 'fast-orthophoto', 'value': True})
 
     # Target longest side in pixels for pre-processing resize.
     # WebODM's server-side resize_image() uses Pillow LANCZOS and preserves
@@ -361,7 +371,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
             raise RuntimeError("No superuser account found — cannot create WebODM project")
 
         project = Project.objects.create(
-            name=f"TAK {display_name}",
+            name=f"TAK {display_name} [{job_id[:8]}]",
             owner=user,
         )
         archive.update_job(job_id, webodm_project_id=project.id)
@@ -416,7 +426,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         task = Task.objects.create(
             pk=task_uuid,
             project=project,
-            name=display_name,
+            name=f"{display_name} [{job_id[:8]}]",
             auto_processing_node=True,
             images_count=len(saved_paths),
             options=TASK_OPTIONS,
@@ -561,6 +571,13 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         archive.mark_failed(job_id, str(exc))
 
     finally:
-        # Always clean up — disk space is precious on-scene
-        _delete_webodm_project(project)
+        # Conditionally delete WebODM project — skip if operator requested retention.
+        # Retained projects are cleaned up by purge_expired_jobs() at 72 hours.
+        if retain_task and project is not None:
+            logger.info(
+                f"[TAK] {job_id}: WebODM project {project.id} retained "
+                f"(auto-purge with job at 72h)"
+            )
+        else:
+            _delete_webodm_project(project)
         archive.cleanup_working_dir(job_id)

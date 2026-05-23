@@ -22,7 +22,10 @@ Job record schema:
         "phase":               str (current processing phase label, v0.7.2+),
         "created_at":          str (ISO 8601, UTC),
         "completed_at":        str | null,
-        "webodm_task_id":      int | null,
+        "webodm_task_id":      str | null,
+        "webodm_project_id":   int | null,   # retained only when retain_task=True (v0.7.6+)
+        "retain_task":         bool,         # if True, WebODM project is not auto-deleted (v0.7.6+)
+        "quality_mode":        bool,         # if True, full SfM pipeline (fast-orthophoto off) (v0.7.7+)
         "file_size_bytes":     int | null,   # MBTiles size
         "geotiff_size_bytes":  int | null,   # RGB GeoTIFF size (v0.7+)
         "error":               str | null
@@ -147,9 +150,31 @@ def _sanitize_filename(name):
     return safe or 'job'
 
 
+# ── WebODM project cleanup ─────────────────────────────────────────────────
+
+def _delete_webodm_project_by_id(project_id):
+    """
+    Delete a retained WebODM project (and its tasks) by primary key.
+    Called when a retain_task job is manually deleted or auto-purged.
+    Silently skips if project_id is None or the project no longer exists.
+    Runs in the webapp/Celery context where the Django ORM is available.
+    """
+    if not project_id:
+        return
+    try:
+        from app.models import Project
+        deleted, _ = Project.objects.filter(pk=project_id).delete()
+        if deleted:
+            log.info('TAK Overlay: deleted retained WebODM project %s', project_id)
+        else:
+            log.debug('TAK Overlay: WebODM project %s already gone', project_id)
+    except Exception as e:
+        log.warning('TAK Overlay: could not delete WebODM project %s: %s', project_id, e)
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def create_job(incident_name, tz_offset_minutes=0):
+def create_job(incident_name, tz_offset_minutes=0, retain_task=False, quality_mode=False):
     """
     Create a new job record in running state.
     Returns the job_id (UUID string).
@@ -163,6 +188,12 @@ def create_job(incident_name, tz_offset_minutes=0):
                                   time rather than server UTC.
                                   e.g. AKDT = -480, EST = -300, UTC = 0.
                                   Defaults to 0 (UTC stamp) if not supplied.
+        retain_task       (bool): If True, the WebODM project/task is NOT
+                                  auto-deleted when the job completes. It will
+                                  be cleaned up by purge_expired_jobs() at 72h.
+        quality_mode      (bool): If True, the full SfM pipeline runs instead
+                                  of fast-orthophoto. Higher output quality,
+                                  ~15–25 min runtime vs ~3–5 min.
     """
     job_id = str(uuid.uuid4())
     utc_now  = datetime.now(timezone.utc)
@@ -183,6 +214,9 @@ def create_job(incident_name, tz_offset_minutes=0):
         'created_at':         _now_iso(),
         'completed_at':       None,
         'webodm_task_id':     None,
+        'webodm_project_id':  None,
+        'retain_task':        retain_task,
+        'quality_mode':       quality_mode,
         'file_size_bytes':    None,
         'geotiff_size_bytes': None,
         'error':              None,
@@ -320,7 +354,8 @@ def mark_cancelled(job_id):
 
 def delete_job(job_id):
     """
-    Delete a job record and its associated files (MBTiles + working dir).
+    Delete a job record and its associated files (MBTiles, GeoTIFF, working dir).
+    If the job had retain_task=True, also deletes the WebODM project.
     Safe to call even if files don't exist.
     """
     path = _ensure_index()
@@ -342,6 +377,9 @@ def delete_job(job_id):
                     log.info('TAK Overlay: deleted GeoTIFF for job %s', job_id)
                 # Remove working dir
                 cleanup_working_dir(job_id)
+                # Remove retained WebODM project (v0.7.6+)
+                if target.get('retain_task') and target.get('webodm_project_id'):
+                    _delete_webodm_project_by_id(target['webodm_project_id'])
                 # Remove from index
                 jobs = [j for j in jobs if j['job_id'] != job_id]
                 _write_index(f, jobs)
@@ -382,6 +420,9 @@ def purge_expired_jobs():
                 if geotiff and os.path.exists(geotiff):
                     os.remove(geotiff)
                 cleanup_working_dir(job['job_id'])
+                # Clean up retained WebODM project (v0.7.6+)
+                if job.get('retain_task') and job.get('webodm_project_id'):
+                    _delete_webodm_project_by_id(job['webodm_project_id'])
                 log.info('TAK Overlay: purged expired job %s ("%s")',
                          job['job_id'], job['display_name'])
 

@@ -1,5 +1,5 @@
 """
-api.py — TAK Incident Overlay (v0.7.2)
+api.py — TAK Incident Overlay (v0.7.7)
 All HTTP view functions. Registered as MountPoints in plugin.py.
 
 Endpoints:
@@ -27,7 +27,8 @@ from . import archive
 
 log = logging.getLogger(__name__)
 
-MAX_PHOTOS         = 100
+MAX_PHOTOS         = 150   # v0.7.5: raised from 100
+MAX_PHOTOS_HIGH    = 300   # high-capacity mode (single-toggle, v0.7.5)
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg'}
 
 # JPEG magic bytes (SOI marker)
@@ -150,14 +151,45 @@ def upload_view(request):
     except (ValueError, TypeError):
         tz_offset_minutes = 0
 
+    # ── Parse high-capacity flag (v0.7.5) ──────────────────────
+    # Operator enables a single toggle in the UI to raise the limit
+    # from MAX_PHOTOS (150) to MAX_PHOTOS_HIGH (300). Backend re-validates
+    # regardless of frontend state.
+    high_capacity = request.POST.get('high_capacity', 'false').lower() == 'true'
+    effective_limit = MAX_PHOTOS_HIGH if high_capacity else MAX_PHOTOS
+
+    # ── Parse retain_task flag (v0.7.6) ────────────────────────
+    # When enabled, the WebODM project is not auto-deleted after the
+    # pipeline completes. It remains accessible in WebODM for up to
+    # 72 hours until purge_expired_jobs() cleans it alongside the job.
+    retain_task = request.POST.get('retain_task', 'false').lower() == 'true'
+
+    # ── Parse quality_mode flag (v0.7.7) ───────────────────────
+    # When enabled, fast-orthophoto is omitted and the full SfM pipeline
+    # runs. Higher output quality but ~15–25 min runtime vs ~3–5 min.
+    # Not recommended while sUAS video streams are active.
+    quality_mode = request.POST.get('quality_mode', 'false').lower() == 'true'
+
     # ── Validate photo list ────────────────────────────────────
     images = request.FILES.getlist('images[]')
     if not images:
         return _err('Please select at least one photo.')
-    if len(images) > MAX_PHOTOS:
+    if len(images) > effective_limit:
+        if high_capacity:
+            return _err(
+                f'High-capacity mode allows up to {MAX_PHOTOS_HIGH} photos per job. '
+                f'You selected {len(images)}. Please remove some and try again.'
+            )
         return _err(
             f'Maximum {MAX_PHOTOS} photos per job. '
-            f'You selected {len(images)}. Please remove some and try again.'
+            f'You selected {len(images)}. Please remove some and try again, '
+            f'or enable high-capacity mode (up to {MAX_PHOTOS_HIGH}).'
+        )
+
+    if high_capacity:
+        log.info(
+            'TAK Overlay: high-capacity mode ENABLED for upload — %d photos, incident="%s"',
+            len(images), incident_name,
         )
 
     # ── Cheap pre-check: extensions only ───────────────────────
@@ -172,7 +204,8 @@ def upload_view(request):
 
     # ── Create job record ──────────────────────────────────────
     try:
-        job_id = archive.create_job(incident_name, tz_offset_minutes=tz_offset_minutes)
+        job_id = archive.create_job(incident_name, tz_offset_minutes=tz_offset_minutes,
+                                    retain_task=retain_task, quality_mode=quality_mode)
         images_dir = archive.get_images_dir(job_id)
     except Exception as e:
         log.exception('TAK Overlay: failed to create job record: %s', e)
@@ -222,7 +255,7 @@ def upload_view(request):
     # ── Kick off async pipeline ────────────────────────────────
     try:
         from . import pipeline
-        pipeline.start(job_id, saved_paths)
+        pipeline.start(job_id, saved_paths, retain_task=retain_task, quality_mode=quality_mode)
         log.info(
             'TAK Overlay: pipeline started for job %s',
             job_id,
@@ -467,9 +500,17 @@ def node_status_view(request):
     """
     GET /plugins/tak_incident_overlay/node-status/
 
-    Returns the online/offline state of the primary processing node.
-    Queries WebODM's ProcessingNode model, which is refreshed by a background
-    Celery task — this endpoint returns the cached state, not a live probe.
+    Returns the online/offline state of the primary processing node via a
+    direct HTTP health probe to the node's /info endpoint. This bypasses
+    WebODM's cached ProcessingNode heartbeat (which has a ~2-minute timeout
+    in WebODM 3.2.2), giving ~2-5 second detection lag instead.
+
+    Probe: GET http://<node.hostname>:<node.port>/info  (2-second timeout)
+    Online if the probe returns HTTP 200; offline for any other response or
+    connection error.
+
+    Hostname and port are read dynamically from the first ProcessingNode
+    record in the database — no hardcoded values.
 
     Returns JSON:
         {"ok": true, "online": true,  "name": "node-odx-1"}
@@ -477,15 +518,23 @@ def node_status_view(request):
         {"ok": true, "online": false, "name": "No node configured"}
     """
     try:
+        import requests as _requests
         from nodeodm.models import ProcessingNode
-        node = ProcessingNode.objects.filter(enabled=True).order_by('id').first()
+
+        node = ProcessingNode.objects.order_by('id').first()
         if node is None:
             return _ok(online=False, name='No node configured')
+
+        url = 'http://{}:{}/info'.format(node.hostname, node.port)
         try:
-            online = node.is_online()
+            resp = _requests.get(url, timeout=2)
+            online = resp.status_code == 200
         except Exception:
             online = False
+
+        log.debug('TAK Overlay: node probe %s -> online=%s', url, online)
         return _ok(online=online, name=node.hostname)
+
     except Exception as e:
         log.warning('TAK Overlay: node_status_view error: %s', e)
         return _ok(online=False, name='Unknown')
