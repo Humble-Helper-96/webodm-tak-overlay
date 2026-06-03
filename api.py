@@ -1,5 +1,5 @@
 """
-api.py — TAK Incident Overlay (v0.7.2)
+api.py — TAK Incident Overlay (v0.7.10)
 All HTTP view functions. Registered as MountPoints in plugin.py.
 
 Endpoints:
@@ -7,7 +7,6 @@ Endpoints:
     GET   jobs/                                List all jobs (for archive section)
     GET   status/(?P<job_id>[^/]+)/            Poll a specific job's status
     POST  cancel/(?P<job_id>[^/]+)/            Cancel a running job
-    GET   download/(?P<job_id>[^/]+)/          Download completed MBTiles file
     GET   download-geotiff/(?P<job_id>[^/]+)/  Download completed GeoTIFF file
     POST  delete/(?P<job_id>[^/]+)/            Delete a completed/failed/cancelled job
     GET   node-status/                         Processing node online/offline status (v0.7.2)
@@ -27,7 +26,8 @@ from . import archive
 
 log = logging.getLogger(__name__)
 
-MAX_PHOTOS         = 100
+MAX_PHOTOS         = 150   # v0.7.5: raised from 100
+MAX_PHOTOS_HIGH    = 300   # high-capacity mode (single-toggle, v0.7.5)
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg'}
 
 # JPEG magic bytes (SOI marker)
@@ -150,14 +150,65 @@ def upload_view(request):
     except (ValueError, TypeError):
         tz_offset_minutes = 0
 
+    # ── Parse high-capacity flag (v0.7.5) ──────────────────────
+    # Operator enables a single toggle in the UI to raise the limit
+    # from MAX_PHOTOS (150) to MAX_PHOTOS_HIGH (300). Backend re-validates
+    # regardless of frontend state.
+    high_capacity = request.POST.get('high_capacity', 'false').lower() == 'true'
+    effective_limit = MAX_PHOTOS_HIGH if high_capacity else MAX_PHOTOS
+
+    # ── Parse retain_task flag (v0.7.6) ────────────────────────
+    # When enabled, the WebODM project is not auto-deleted after the
+    # pipeline completes. It remains accessible in WebODM for up to
+    # 72 hours until purge_expired_jobs() cleans it alongside the job.
+    retain_task = request.POST.get('retain_task', 'false').lower() == 'true'
+
+    # ── Parse quality_mode flag (v0.7.8 — repurposed) ──────────
+    # UI label is "High-Resolution mode". When enabled, runs the high-res
+    # variant: image resize raised to 4000 px and orthophoto-resolution
+    # pinned to 2.5 cm/px. Runtime ~3× standard on reference hardware.
+    quality_mode = request.POST.get('quality_mode', 'false').lower() == 'true'
+
+    # ── Parse terrain_correction flag (v0.7.8) ─────────────────
+    # When enabled, fast-orthophoto is omitted and ODM runs the full SfM
+    # pipeline (dense MVS, mesh, textured orthorectification). Corrects for
+    # varied terrain and tall vertical features at ~12× runtime cost on
+    # reference hardware.
+    terrain_correction = request.POST.get('terrain_correction', 'false').lower() == 'true'
+
+    # ── Parse max_concurrency (v0.7.8) ─────────────────────────
+    # Operator-selectable CPU thread count for ODM processing. Allowed values
+    # are 2, 4, 6 (v0.7.10 — 8 dropped for hardware safety on smaller nodes).
+    # Anything else (missing, malformed, out of range) falls back to the
+    # default of 4. Backend re-validates regardless of frontend state.
+    ALLOWED_CONCURRENCY = {2, 4, 6}
+    try:
+        max_concurrency = int(request.POST.get('max_concurrency', '4'))
+    except (TypeError, ValueError):
+        max_concurrency = 4
+    if max_concurrency not in ALLOWED_CONCURRENCY:
+        max_concurrency = 4
+
     # ── Validate photo list ────────────────────────────────────
     images = request.FILES.getlist('images[]')
     if not images:
         return _err('Please select at least one photo.')
-    if len(images) > MAX_PHOTOS:
+    if len(images) > effective_limit:
+        if high_capacity:
+            return _err(
+                f'High-capacity mode allows up to {MAX_PHOTOS_HIGH} photos per job. '
+                f'You selected {len(images)}. Please remove some and try again.'
+            )
         return _err(
             f'Maximum {MAX_PHOTOS} photos per job. '
-            f'You selected {len(images)}. Please remove some and try again.'
+            f'You selected {len(images)}. Please remove some and try again, '
+            f'or enable high-capacity mode (up to {MAX_PHOTOS_HIGH}).'
+        )
+
+    if high_capacity:
+        log.info(
+            'TAK Overlay: high-capacity mode ENABLED for upload — %d photos, incident="%s"',
+            len(images), incident_name,
         )
 
     # ── Cheap pre-check: extensions only ───────────────────────
@@ -172,7 +223,10 @@ def upload_view(request):
 
     # ── Create job record ──────────────────────────────────────
     try:
-        job_id = archive.create_job(incident_name, tz_offset_minutes=tz_offset_minutes)
+        job_id = archive.create_job(incident_name, tz_offset_minutes=tz_offset_minutes,
+                                    retain_task=retain_task, quality_mode=quality_mode,
+                                    terrain_correction=terrain_correction,
+                                    max_concurrency=max_concurrency)
         images_dir = archive.get_images_dir(job_id)
     except Exception as e:
         log.exception('TAK Overlay: failed to create job record: %s', e)
@@ -222,7 +276,10 @@ def upload_view(request):
     # ── Kick off async pipeline ────────────────────────────────
     try:
         from . import pipeline
-        pipeline.start(job_id, saved_paths)
+        pipeline.start(job_id, saved_paths, retain_task=retain_task,
+                       quality_mode=quality_mode,
+                       terrain_correction=terrain_correction,
+                       max_concurrency=max_concurrency)
         log.info(
             'TAK Overlay: pipeline started for job %s',
             job_id,
@@ -375,56 +432,29 @@ def cancel_view(request, job_id):
 
 def _safe_filename(name):
     """
-    Strip characters that could break or inject into the
-    Content-Disposition header. Whitelist alphanumerics, dot, dash,
-    underscore, and space.
+    Make a stored filename safe for the Content-Disposition header.
+    Replaces spaces with underscores and strips anything outside
+    [A-Za-z0-9._-]. Mirrors archive._sanitize_filename(), kept here as
+    defense-in-depth so legacy records that somehow stored a space-bearing
+    filename still serve with underscores.
     """
-    safe = ''.join(c for c in name if c.isalnum() or c in '._- ')
-    return safe or 'overlay.mbtiles'
+    name = name.replace(' ', '_')
+    safe = ''.join(c for c in name if c.isalnum() or c in '._-')
+    return safe or 'overlay.tif'
 
 
-@login_required
-def download_view(request, job_id):
-    """
-    GET /plugins/tak_incident_overlay/download/<job_id>/
-
-    Streams the completed MBTiles file as a download attachment.
-    The filename in the Content-Disposition header is the sanitized display name.
-    """
-    job = archive.get_job(job_id)
-    if job is None:
-        raise Http404('Job not found.')
-    if job['status'] != 'completed':
-        return _err('Job is not completed yet.', 400)
-
-    mbtiles_path = archive.get_mbtiles_path(job)
-    if not os.path.exists(mbtiles_path):
-        return _err(
-            'Output file not found. It may have been automatically purged after 72 hours.',
-            404
-        )
-
-    safe_name = _safe_filename(job.get('filename') or 'overlay.mbtiles')
-    response = FileResponse(
-        open(mbtiles_path, 'rb'),
-        content_type='application/octet-stream',
-    )
-    response['Content-Disposition'] = f'attachment; filename="{safe_name}"'
-    log.info('TAK Overlay: serving download for job %s (%s)', job_id, safe_name)
-    return response
-
-
-# ── GeoTIFF download (v0.7.0) ──────────────────────────────────────────────────
+# ── GeoTIFF download ───────────────────────────────────────────────────────────
 
 @login_required
 def download_geotiff_view(request, job_id):
     """
     GET /plugins/tak_incident_overlay/download-geotiff/<job_id>/
 
-    Streams the completed RGB GeoTIFF file as a download attachment.
-    The GeoTIFF is a 3-band (R, G, B) WGS84 raster derived from the same
-    orthophoto as the MBTiles output. Useful for GIS tools (QGIS, ArcGIS)
-    or TAK server tile workflows that prefer plain GeoTIFF over MBTiles.
+    Streams the completed GeoTIFF file as a download attachment.
+    The GeoTIFF is a 3-band RGB WGS84 raster with a 1-bit internal alpha
+    mask, JPEG-compressed at quality 85 (v0.7.9+). Earlier v0.7.x jobs
+    used 4-band RGBA LZW; the on-disk format differs but the download
+    path is the same.
 
     Jobs created in v0.6 and earlier do not have a GeoTIFF — those return
     404 with a clear message.
@@ -467,9 +497,17 @@ def node_status_view(request):
     """
     GET /plugins/tak_incident_overlay/node-status/
 
-    Returns the online/offline state of the primary processing node.
-    Queries WebODM's ProcessingNode model, which is refreshed by a background
-    Celery task — this endpoint returns the cached state, not a live probe.
+    Returns the online/offline state of the primary processing node via a
+    direct HTTP health probe to the node's /info endpoint. This bypasses
+    WebODM's cached ProcessingNode heartbeat (which has a ~2-minute timeout
+    in WebODM 3.2.2), giving ~2-5 second detection lag instead.
+
+    Probe: GET http://<node.hostname>:<node.port>/info  (2-second timeout)
+    Online if the probe returns HTTP 200; offline for any other response or
+    connection error.
+
+    Hostname and port are read dynamically from the first ProcessingNode
+    record in the database — no hardcoded values.
 
     Returns JSON:
         {"ok": true, "online": true,  "name": "node-odx-1"}
@@ -477,15 +515,23 @@ def node_status_view(request):
         {"ok": true, "online": false, "name": "No node configured"}
     """
     try:
+        import requests as _requests
         from nodeodm.models import ProcessingNode
-        node = ProcessingNode.objects.filter(enabled=True).order_by('id').first()
+
+        node = ProcessingNode.objects.order_by('id').first()
         if node is None:
             return _ok(online=False, name='No node configured')
+
+        url = 'http://{}:{}/info'.format(node.hostname, node.port)
         try:
-            online = node.is_online()
+            resp = _requests.get(url, timeout=2)
+            online = resp.status_code == 200
         except Exception:
             online = False
+
+        log.debug('TAK Overlay: node probe %s -> online=%s', url, online)
         return _ok(online=online, name=node.hostname)
+
     except Exception as e:
         log.warning('TAK Overlay: node_status_view error: %s', e)
         return _ok(online=False, name='Unknown')
@@ -499,8 +545,9 @@ def delete_view(request, job_id):
     """
     POST /plugins/tak_incident_overlay/delete/<job_id>/
 
-    Deletes a completed, failed, or cancelled job and its MBTiles file.
-    Running jobs must be cancelled first.
+    Deletes a completed, failed, or cancelled job and all its output files
+    (GeoTIFF, plus legacy MBTiles from pre-v0.7.8 jobs). Running jobs must
+    be cancelled first.
 
     Returns JSON:
         {"ok": true,  "job_id": "<uuid>"}

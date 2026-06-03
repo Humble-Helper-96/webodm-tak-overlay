@@ -1,307 +1,348 @@
 # TAK Incident Overlay — Deployment Guide
-**Plugin v0.6.0 | WebODM Coreplugin**
+**Plugin version:** v0.7.10
+**WebODM target:** 3.2.2 (Docker install)
+**Last updated:** 2026-06-03
 
 ---
 
-## Overview
+## Before You Start
 
-This document covers how to package the TAK Incident Overlay plugin into a
-deployable archive and install it on a new WebODM instance. It is intended for
-anyone standing up a fresh WebODM host who needs to replicate the plugin from
-a known-good installation.
+This guide assumes:
 
----
+- WebODM 3.2.2 is already installed and running on the dedicated WebODM machine
+- You have SSH access (or direct terminal access) to that machine
+- At least one ODM processing node (NodeODX) is registered in WebODM and showing online
+- You have the WebODM admin login
 
-## Part 1 — Building the Plugin Archive
-
-### 1.1 — Required Files
-
-The complete plugin consists of exactly these 7 files:
-
-```
-tak_incident_overlay/
-├── __init__.py
-├── manifest.json
-├── plugin.py
-├── archive.py
-├── api.py
-├── pipeline.py
-└── templates/
-    └── app.html
-```
-
-> **Do not include `__pycache__/`** — these are compiled bytecode artifacts
-> generated at runtime by the Python interpreter. They are host-specific and
-> will be regenerated automatically on first load.
-
-### 1.2 — Create the Archive
-
-From the machine with the working plugin installation, run:
-
-```bash
-cd ~/WebODM/coreplugins
-
-tar -czf tak_incident_overlay_v0.6.0.tar.gz \
-    --exclude='tak_incident_overlay/__pycache__' \
-    tak_incident_overlay/
-```
-
-Verify the archive contents before transferring:
-
-```bash
-tar -tzf tak_incident_overlay_v0.6.0.tar.gz
-```
-
-Expected output:
-```
-tak_incident_overlay/
-tak_incident_overlay/__init__.py
-tak_incident_overlay/manifest.json
-tak_incident_overlay/plugin.py
-tak_incident_overlay/archive.py
-tak_incident_overlay/api.py
-tak_incident_overlay/pipeline.py
-tak_incident_overlay/templates/
-tak_incident_overlay/templates/app.html
-```
-
-Exactly 9 lines — 7 files + 2 directory entries. If you see any `.pyc` files,
-re-run the tar command with the `--exclude` flag.
+If WebODM is not yet installed, set that up first — this guide covers the plugin only.
 
 ---
 
-## Part 2 — Transferring the Archive
+## Step 1 — Find Your WebODM Directory
 
-Copy the archive to the target machine using `scp`:
+Before anything else, locate the folder where WebODM is installed. It contains
+a `docker-compose.yml` file. If you're not sure where it is, this command will
+find it:
 
 ```bash
-scp tak_incident_overlay_v0.6.0.tar.gz <user>@<target-ip>:~/
+find / -name "docker-compose.yml" -path "*/WebODM/*" 2>/dev/null
 ```
 
-Or transfer via any method available (USB, shared network path, etc.).
+Once you have the path, set it as a variable so every command in this guide
+works without substitution:
+
+```bash
+# Replace the path below with your actual WebODM directory
+export WEBODM=/path/to/your/WebODM
+```
+
+You can confirm you have the right directory:
+
+```bash
+ls $WEBODM/docker-compose.yml    # should exist
+ls $WEBODM/coreplugins/          # should exist
+```
+
+> **Note:** `$WEBODM` is only set for your current terminal session. If you
+> close the terminal and come back, run the `export` line again before
+> continuing.
 
 ---
 
-## Part 3 — Installing on a New WebODM Instance
-
-### Prerequisites
-
-The target machine must have:
-
-- WebODM installed and confirmed working (at least one successful job)
-- Docker and Docker Compose available
-- WebODM directory at `~/WebODM` (adjust paths below if different)
-- A processing node configured and online (verify at Admin → Processing Nodes)
-
-### 3.1 — Extract the Plugin
+## Step 2 — Download the Plugin
 
 ```bash
-cd ~/WebODM/coreplugins
-tar -xzf ~/tak_incident_overlay_v0.6.0.tar.gz
+cd $WEBODM/coreplugins
+
+git clone https://github.com/Humble-Helper-96/webodm-tak-overlay tak_incident_overlay
 ```
 
-Verify the result:
+If git is not available, download and extract the release archive instead:
 
 ```bash
-tree -L 2 ~/WebODM/coreplugins/tak_incident_overlay
+cd $WEBODM/coreplugins
+
+wget https://github.com/Humble-Helper-96/webodm-tak-overlay/archive/refs/tags/v0.7.10.tar.gz
+tar -xzf v0.7.10.tar.gz
+mv webodm-tak-overlay-0.7.10 tak_incident_overlay
+rm v0.7.10.tar.gz
 ```
 
-Expected:
-```
-tak_incident_overlay/
-├── __init__.py
-├── manifest.json
-├── plugin.py
-├── archive.py
-├── api.py
-├── pipeline.py
-└── templates/
-    └── app.html
+### Confirm the files are there
+
+```bash
+ls tak_incident_overlay/
 ```
 
-### 3.2 — Add Volume Mounts to docker-compose.yml
+You should see at least these files:
 
-The plugin directory must be bind-mounted into both the `webapp` and `worker`
-containers. Without this, the plugin is destroyed on `docker compose down`.
+```
+__init__.py   manifest.json   plugin.py   api.py
+pipeline.py   archive.py      templates/
+```
 
-Add the following line to the `volumes:` block of **both** the `webapp` and
-`worker` service definitions in `~/WebODM/docker-compose.yml`:
+If any are missing, re-download before continuing.
+
+---
+
+## Step 3 — Configure WebODM
+
+Two settings need to be added before the plugin will work correctly: one to
+allow large photo uploads, and one to make output files survive container
+restarts.
+
+### Allow large uploads
+
+Open the WebODM environment file:
+
+```bash
+nano $WEBODM/.env
+```
+
+Add this line at the bottom:
+
+```
+DATA_UPLOAD_MAX_MEMORY_SIZE=314572800
+```
+
+Save and close (`Ctrl+X`, then `Y`, then `Enter`).
+
+> This raises the upload limit to 300 MB, which covers the standard 150-photo
+> batch. If you regularly use High-Capacity mode (300 photos), double this
+> value to `629145600`.
+
+### Keep output files after restarts
+
+Open the Docker Compose file:
+
+```bash
+nano $WEBODM/docker-compose.yml
+```
+
+Find the `webapp:` section. Under its `volumes:` block, add this line:
 
 ```yaml
-- ./coreplugins/tak_incident_overlay:/webodm/coreplugins/tak_incident_overlay:z
+      - ./app_data/media/tak_incident_overlay:/webodm/app/media/tak_incident_overlay
 ```
 
-The quickest way to do this (assumes the standard WebODM compose file where
-both services share the same `${WO_MEDIA_DIR}` volume line):
+Do the same under the `worker:` section — both need it.
+
+Save and close.
+
+> Without this, the GeoTIFF files the plugin generates will be lost the next
+> time the containers restart.
+
+---
+
+## Step 4 — Restart WebODM
 
 ```bash
-sed -i 's|      - ${WO_MEDIA_DIR}:/webodm/app/media:z|      - ${WO_MEDIA_DIR}:/webodm/app/media:z\n      - ./coreplugins/tak_incident_overlay:/webodm/coreplugins/tak_incident_overlay:z|g' \
-    ~/WebODM/docker-compose.yml
+cd $WEBODM
+docker compose down
+docker compose up -d
 ```
 
-Verify the mount appears in both services:
+Wait about 30 seconds, then check that everything came back up:
 
 ```bash
-grep -n "tak_incident_overlay" ~/WebODM/docker-compose.yml
+docker compose ps
 ```
 
-Expected: two hits, one in the `webapp` block and one in the `worker` block.
+All containers (`db`, `broker`, `worker`, `webapp`, `nginx`) should show as `Up`.
 
-> **Note:** If your `docker-compose.yml` has been customized and the
-> `${WO_MEDIA_DIR}` volume line differs, add the mount manually by editing
-> the file directly.
+> **Note on compose vs `docker restart`:** If your install has a separate
+> `docker-compose.nodeodm.yml` and a `COMPOSE_FILE` env var, `docker compose`
+> may complain about an unfilled `node-odm` image. In that case, restart only
+> the plugin-affected containers directly:
+> `docker restart webapp worker`
 
-### 3.3 — Set the Upload Size Limit
+---
 
-WebODM's default Django upload limit (2.5 MB per file) is too low for
-multi-photo drone batches. Set it to 500 MB.
+## Step 5 — Verify the Plugin Loaded
 
-First, locate the settings override file. Depending on the WebODM version this
-will be one of:
+1. Open WebODM in a browser
+2. Look for **TAK Overlay** in the left navigation sidebar
+3. Click it — the plugin UI should open
+
+If the menu item is missing, check the startup logs:
 
 ```bash
-# Newer installs:
-~/WebODM/webodm/settings_override.py
-
-# Older installs:
-~/WebODM/webodm/local_settings.py
+docker logs webapp 2>&1 | grep -i "tak_incident"
 ```
 
-Check which exists:
+A successful load looks like one of:
 
-```bash
-ls ~/WebODM/webodm/settings_override.py ~/WebODM/webodm/local_settings.py 2>/dev/null
 ```
-
-Append the setting to whichever file is present:
-
-```bash
-# For settings_override.py:
-echo "" >> ~/WebODM/webodm/settings_override.py
-echo "DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000" >> ~/WebODM/webodm/settings_override.py
-
-# For local_settings.py:
-echo "" >> ~/WebODM/webodm/local_settings.py
-echo "DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000" >> ~/WebODM/webodm/local_settings.py
-```
-
-Verify it landed on its own line:
-
-```bash
-cat ~/WebODM/webodm/settings_override.py
-# or
-cat ~/WebODM/webodm/local_settings.py
-```
-
-The last line should read exactly:
-```
-DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
-```
-
-### 3.4 — Restart WebODM
-
-```bash
-cd ~/WebODM
-./webodm.sh restart
-```
-
-### 3.5 — Verify Registration
-
-Once the stack is back up, confirm the plugin registered without errors:
-
-```bash
-docker logs webapp | grep -i tak
-```
-
-Expected lines:
-```
-INFO Added [[coreplugins.tak_incident_overlay.plugin]] plugin to database
+Found plugin: tak_incident_overlay (v0.7.10)
 INFO Registered [coreplugins.tak_incident_overlay.plugin]
 ```
 
-If you see `ImportError` or `ModuleNotFoundError` instead, the plugin files
-are missing or the volume mount did not apply — recheck Steps 3.1 and 3.2.
-
-### 3.6 — Enable the Plugin in the UI
-
-1. Open WebODM in a browser: `http://<host-ip>:8000`
-2. Log in as an administrator
-3. Navigate to **Administration → Plugins**
-4. Find `tak_incident_overlay` in the list
-5. Click **Enable**
-6. The **TAK Overlay** item should appear in the left navigation sidebar
+(WebODM versions vary in log wording.)
 
 ---
 
-## Part 4 — Post-Install Verification
+## Step 6 — Run a Test Job
 
-Run through this checklist before declaring the install complete.
+Use a small set of GPS-tagged JPEGs (5–10 images, clear sky, good overlap
+between photos).
 
-```bash
-# Plugin files present:
-tree ~/WebODM/coreplugins/tak_incident_overlay
+1. Enter a location name in the **Location of Incident** field
+2. Select your test images
+3. Leave all toggles at their defaults (4 threads, High-Resolution off, Terrain correction off)
+4. Click **Process**
 
-# Volume mounts in compose file:
-grep -n "tak_incident_overlay" ~/WebODM/docker-compose.yml
-# Expected: 2 hits
+The status bar should move through these phases in order:
 
-# Upload size limit set:
-grep "DATA_UPLOAD_MAX_MEMORY_SIZE" ~/WebODM/webodm/settings_override.py
-# Expected: DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
-
-# Plugin registered in logs:
-docker logs webapp | grep -i tak
-# Expected: INFO Registered [coreplugins.tak_incident_overlay.plugin]
-
-# Processing node online:
-docker exec webapp python manage.py shell -c "
-from nodeodm.models import ProcessingNode
-for n in ProcessingNode.objects.all():
-    print(f'id={n.id} host={n.hostname}:{n.port} online={n.is_online()}')
-"
-# Expected: a processing node listed with online=True
-
-# All containers running:
-docker ps
-# Expected: webapp, worker, processing node, broker, db all Up
+```
+Queued → Processing → Finalizing → Reprojecting → Exporting GeoTIFF → Completed
 ```
 
+With 5–10 images in standard mode, this takes roughly 2–4 minutes on
+reference-class hardware (Lenovo M920q with Intel i5-8500). Slower or
+faster CPUs scale accordingly. When complete, the GeoTIFF Download button
+appears in the job row.
+
+If the job fails, see [Troubleshooting](#troubleshooting) below.
+
 ---
 
-## Part 5 — Upgrade Procedure
+## Upgrading from an Earlier Version
 
-To update the plugin files on an existing installation without a full
-teardown:
+### From any v0.7.x release (v0.7.7 or later)
+
+No data migration needed — the job record format is unchanged across v0.7.7+.
+
+If you installed via git:
 
 ```bash
-# Extract new archive over existing files:
-cd ~/WebODM/coreplugins
-tar -xzf ~/tak_incident_overlay_vX.X.X.tar.gz
+cd $WEBODM/coreplugins/tak_incident_overlay
+git fetch origin
+git checkout v0.7.10
+```
 
-# Restart only the Python containers (no full stack restart needed):
-cd ~/WebODM
+If you installed via archive: delete the folder and re-run Step 2.
+
+Then restart:
+
+```bash
+docker restart webapp worker
+```
+
+If your install supports it, the standard compose form also works:
+
+```bash
+cd $WEBODM
 docker compose restart webapp worker
-
-# Verify new version registered:
-docker logs webapp | grep -i tak
 ```
 
-Template-only changes (`app.html`) do not require a container restart —
-copy the file and hard-reload the browser (`Ctrl+Shift+R`).
+### From v0.6.x or earlier
+
+The job record format and output set both changed substantially. Old MBTiles
+files on disk will continue to be cleaned up by the 72-hour auto-purge but
+the new plugin no longer produces MBTiles.
+
+1. Let any active jobs finish (or cancel them)
+2. Back up existing records if needed:
+   ```bash
+   cp $WEBODM/app_data/media/tak_incident_overlay/index.json ~/tak_index_backup.json
+   ```
+3. Delete the old index:
+   ```bash
+   rm $WEBODM/app_data/media/tak_incident_overlay/index.json
+   ```
+4. Install v0.7.10 plugin files (Step 2)
+5. Restart webapp and worker (Step 4)
+
+The plugin creates a fresh index automatically on first use.
 
 ---
 
-## Quick Reference
+## Making Changes Later
 
-| Item | Value |
+| What changed                | What to do |
 |---|---|
-| Plugin directory | `~/WebODM/coreplugins/tak_incident_overlay/` |
-| Settings file (new installs) | `~/WebODM/webodm/settings_override.py` |
-| Settings file (older installs) | `~/WebODM/webodm/local_settings.py` |
-| Upload size limit | `DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000` |
-| Restart command | `cd ~/WebODM && ./webodm.sh restart` |
-| Python-only restart | `docker compose restart webapp worker` |
-| Plugin UI path | Administration → Plugins → tak_incident_overlay → Enable |
-| Plugin nav item | TAK Overlay (left sidebar) |
-| Job archive location | `/webodm/app/media/tak_incident_overlay/` (inside webapp container) |
-| Auto-purge window | 72 hours |
+| Any `.py` file              | `docker restart webapp worker` |
+| `app.html` only             | Upload the file, then hard-reload the browser (`Ctrl+Shift+R`) |
+| `.env` setting              | `cd $WEBODM && docker compose down && docker compose up -d` |
+| `docker-compose.yml` mounts | `cd $WEBODM && docker compose down && docker compose up -d` |
+
+---
+
+## Troubleshooting
+
+### Plugin menu item is missing
+
+The plugin failed to load at startup. Check:
+
+```bash
+docker logs webapp 2>&1 | grep -i "error\|tak"
+```
+
+Common causes: a file is missing from the plugin folder, or the files have
+wrong permissions. Fix permissions with:
+
+```bash
+sudo chmod -R 755 $WEBODM/coreplugins/tak_incident_overlay
+```
+
+Then restart webapp and worker.
+
+### Node status dot stays grey or red
+
+The plugin cannot reach the ODM processing node. In WebODM, go to
+**Administration → Processing Nodes** and confirm the node shows as online.
+If it's offline, restart NodeODX and wait for it to reconnect.
+
+### Job stays in "Queued" and never starts
+
+NodeODX is reachable but its queue is full, or it went offline after the job
+was submitted. Check the node status in WebODM's Processing Nodes panel. If
+it looks healthy, wait — NodeODX will process queued jobs in order.
+
+### Upload fails or browser shows an error on submit
+
+The upload size limit may not have been applied. Confirm the `.env` change
+from Step 3 is saved, and that you did a full `docker compose down && up`
+(not just a restart). Also check available disk space:
+
+```bash
+df -h $WEBODM/app_data/
+```
+
+### Output files disappeared after a restart
+
+The volume mount from Step 3 was not added, or was added incorrectly.
+Re-check both the `webapp` and `worker` sections in `docker-compose.yml`,
+then do a full `docker compose down && up`.
+
+### Images rejected: "No GPS EXIF data"
+
+The photos do not contain embedded GPS coordinates. TAK overlays require
+georeferenced images — the drone must have had GPS lock during the flight.
+To check a specific image:
+
+```bash
+exiftool photo.jpg | grep GPS
+```
+
+If no GPS lines appear, those images cannot be used with this plugin.
+
+### Images rejected: "Not a valid JPEG"
+
+Only JPEG files are accepted. RAW, HEIC, PNG, and TIFF files will be
+rejected at upload. Convert to JPEG before submitting.
+
+### Permission errors removing the plugin folder
+
+If you need to delete the plugin folder and see `Permission denied` on
+`__pycache__` files, those were written by the container running as root.
+Use `sudo`:
+
+```bash
+sudo rm -rf $WEBODM/coreplugins/tak_incident_overlay
+```
+
+---
+
+*For architecture details and known issues, see the repository's source files
+and inline docstrings.*

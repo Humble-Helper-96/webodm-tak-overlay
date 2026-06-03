@@ -1,5 +1,5 @@
 """
-archive.py — TAK Incident Overlay (v0.7.0)
+archive.py — TAK Incident Overlay (v0.7.10)
 Job index management, archive directory, and 72-hour auto-purge.
 
 Directory layout (all under settings.MEDIA_ROOT):
@@ -8,22 +8,38 @@ Directory layout (all under settings.MEDIA_ROOT):
     ├── working/<job_id>/                 ← temp space during processing
     │   ├── images/                       ← uploaded photos
     │   └── wgs84.tif                     ← GDAL intermediate (deleted on cleanup)
-    ├── <sanitized_display_name>.mbtiles  ← final MBTiles deliverable (one per job)
-    └── <sanitized_display_name>.tif      ← final RGB GeoTIFF deliverable (one per job, v0.7+)
+    ├── <sanitized_display_name>.tif      ← final RGB GeoTIFF deliverable (one per job)
+    └── <sanitized_display_name>.mbtiles  ← legacy MBTiles from pre-v0.7.8 jobs (not produced
+                                            by current pipeline; still cleaned up on purge)
 
 Job record schema:
     {
         "job_id":              str (UUID4),
         "incident_name":       str (operator input),
         "display_name":        str ("{incident_name} YYYY-MM-DD HHMM"),
-        "filename":            str ("{display_name}.mbtiles", filesystem-safe),
+        "filename":            str ("{display_name}.mbtiles", legacy field retained
+                                    for backward-compat cleanup of pre-v0.7.8 files),
         "geotiff_filename":    str ("{display_name}.tif",     filesystem-safe),  # v0.7+
         "status":              "running" | "completed" | "failed" | "cancelled",
         "phase":               str (current processing phase label, v0.7.2+),
         "created_at":          str (ISO 8601, UTC),
         "completed_at":        str | null,
-        "webodm_task_id":      int | null,
-        "file_size_bytes":     int | null,   # MBTiles size
+        "webodm_task_id":      str | null,
+        "webodm_project_id":   int | null,   # retained only when retain_task=True (v0.7.6+)
+        "retain_task":         bool,         # if True, WebODM project is not auto-deleted (v0.7.6+)
+        "quality_mode":        bool,         # if True, high-resolution run (4000px resize +
+                                             # 2.5 cm/px orthophoto-resolution); UI label
+                                             # is "High-Resolution mode" (v0.7.8 — repurposed)
+        "terrain_correction":  bool,         # if True, fast-orthophoto is disabled and the
+                                             # full SfM pipeline runs (dense MVS + mesh +
+                                             # textured orthorectification). Corrects for
+                                             # varied terrain and tall vertical features.
+                                             # Reference hardware (M920q i5-8500), 65-photo
+                                             # job at 4 threads: ~35 min vs ~3 min default.
+                                             # (v0.7.8+)
+        "max_concurrency":     int,          # CPU thread count for ODM processing,
+                                             # one of {2, 4, 6}, default 4 (v0.7.8+)
+        "file_size_bytes":     int | null,   # legacy MBTiles size; always null for v0.7.8+ jobs
         "geotiff_size_bytes":  int | null,   # RGB GeoTIFF size (v0.7+)
         "error":               str | null
     }
@@ -79,7 +95,14 @@ def get_images_dir(job_id):
 
 
 def get_mbtiles_path(job):
-    """Return the full path to the final MBTiles file for a completed job."""
+    """
+    Return the full path where a legacy MBTiles file *would* live for this job.
+
+    As of v0.7.8 the pipeline no longer produces MBTiles, but this helper is
+    retained so delete_job() and purge_expired_jobs() can still clean up
+    .mbtiles files left on disk by pre-v0.7.8 jobs. For new jobs the path
+    returned by this function will not exist on disk.
+    """
     return os.path.join(get_archive_dir(), job['filename'])
 
 
@@ -147,22 +170,67 @@ def _sanitize_filename(name):
     return safe or 'job'
 
 
+# ── WebODM project cleanup ─────────────────────────────────────────────────
+
+def _delete_webodm_project_by_id(project_id):
+    """
+    Delete a retained WebODM project (and its tasks) by primary key.
+    Called when a retain_task job is manually deleted or auto-purged.
+    Silently skips if project_id is None or the project no longer exists.
+    Runs in the webapp/Celery context where the Django ORM is available.
+    """
+    if not project_id:
+        return
+    try:
+        from app.models import Project
+        deleted, _ = Project.objects.filter(pk=project_id).delete()
+        if deleted:
+            log.info('TAK Overlay: deleted retained WebODM project %s', project_id)
+        else:
+            log.debug('TAK Overlay: WebODM project %s already gone', project_id)
+    except Exception as e:
+        log.warning('TAK Overlay: could not delete WebODM project %s: %s', project_id, e)
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def create_job(incident_name, tz_offset_minutes=0):
+def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
+               quality_mode=False, terrain_correction=False, max_concurrency=4):
     """
     Create a new job record in running state.
     Returns the job_id (UUID string).
 
     Args:
-        incident_name     (str): Operator-supplied incident name or number.
-        tz_offset_minutes (int): Signed minutes east of UTC from the browser
-                                  (JS getTimezoneOffset() * -1). Used to
-                                  localise the timestamp in display_name and
-                                  filename so they reflect the operator local
-                                  time rather than server UTC.
-                                  e.g. AKDT = -480, EST = -300, UTC = 0.
-                                  Defaults to 0 (UTC stamp) if not supplied.
+        incident_name      (str): Operator-supplied incident name or number.
+        tz_offset_minutes  (int): Signed minutes east of UTC from the browser
+                                   (JS getTimezoneOffset() * -1). Used to
+                                   localise the timestamp in display_name and
+                                   filename so they reflect the operator local
+                                   time rather than server UTC.
+                                   e.g. AKDT = -480, EST = -300, UTC = 0.
+                                   Defaults to 0 (UTC stamp) if not supplied.
+        retain_task        (bool): If True, the WebODM project/task is NOT
+                                   auto-deleted when the job completes. It will
+                                   be cleaned up by purge_expired_jobs() at 72h.
+        quality_mode       (bool): If True, the high-resolution variant runs:
+                                   image resize raised to 4000 px and
+                                   orthophoto-resolution pinned to 2.5 cm/px.
+                                   Reference hardware (M920q i5-8500), 65-photo
+                                   job at 4 threads: ~10 min vs ~3 min default;
+                                   output 9.0 MB vs 6.1 MB. UI label:
+                                   "High-Resolution mode".
+        terrain_correction (bool): If True, fast-orthophoto is disabled and the
+                                   full SfM pipeline runs (dense MVS, mesh,
+                                   textured orthorectification). Corrects for
+                                   varied terrain and tall vertical features.
+                                   Reference hardware (M920q i5-8500), 65-photo
+                                   job at 4 threads: ~35 min vs ~3 min default;
+                                   ~42 min combined with quality_mode. UI label:
+                                   "Terrain correction".
+        max_concurrency    (int):  Number of CPU threads ODM uses during
+                                   processing. Expected to be one of
+                                   {2, 4, 6}; caller (api.py) validates.
+                                   Defaults to 4.
     """
     job_id = str(uuid.uuid4())
     utc_now  = datetime.now(timezone.utc)
@@ -183,6 +251,11 @@ def create_job(incident_name, tz_offset_minutes=0):
         'created_at':         _now_iso(),
         'completed_at':       None,
         'webodm_task_id':     None,
+        'webodm_project_id':  None,
+        'retain_task':        retain_task,
+        'quality_mode':       quality_mode,
+        'terrain_correction': terrain_correction,
+        'max_concurrency':    max_concurrency,
         'file_size_bytes':    None,
         'geotiff_size_bytes': None,
         'error':              None,
@@ -261,39 +334,33 @@ def get_running_job():
     return None
 
 
-def mark_completed(job_id, mbtiles_path, geotiff_path=None):
+def mark_completed(job_id, geotiff_path):
     """
-    Mark a job as completed. Records file sizes from the output files.
+    Mark a job as completed. Records the GeoTIFF file size.
 
     Args:
         job_id        (str): Job UUID.
-        mbtiles_path  (str): Path to the final MBTiles file (required).
-        geotiff_path  (str, optional): Path to the final RGB GeoTIFF file.
-                                       Pass None to skip GeoTIFF size recording
-                                       (e.g. if the GeoTIFF step was skipped).
+        geotiff_path  (str): Path to the final RGB GeoTIFF file.
+
+    v0.7.8: MBTiles output removed. Only GeoTIFF size is recorded now.
+    Legacy field `file_size_bytes` (previously MBTiles size) is cleared on
+    completion so the frontend doesn't display stale data from earlier jobs.
     """
     try:
-        mbtiles_size = os.path.getsize(mbtiles_path)
+        geotiff_size = os.path.getsize(geotiff_path)
     except OSError:
-        mbtiles_size = None
-
-    geotiff_size = None
-    if geotiff_path:
-        try:
-            geotiff_size = os.path.getsize(geotiff_path)
-        except OSError:
-            geotiff_size = None
+        geotiff_size = None
 
     update_job(
         job_id,
         status='completed',
         completed_at=_now_iso(),
-        file_size_bytes=mbtiles_size,
+        file_size_bytes=None,
         geotiff_size_bytes=geotiff_size,
     )
     log.info(
-        'TAK Overlay: job %s completed — mbtiles %s bytes, geotiff %s bytes',
-        job_id, mbtiles_size, geotiff_size,
+        'TAK Overlay: job %s completed — geotiff %s bytes',
+        job_id, geotiff_size,
     )
 
 
@@ -320,7 +387,9 @@ def mark_cancelled(job_id):
 
 def delete_job(job_id):
     """
-    Delete a job record and its associated files (MBTiles + working dir).
+    Delete a job record and all its associated files (GeoTIFF, legacy MBTiles
+    from pre-v0.7.8 jobs, and the working dir).
+    If the job had retain_task=True, also deletes the retained WebODM project.
     Safe to call even if files don't exist.
     """
     path = _ensure_index()
@@ -342,6 +411,9 @@ def delete_job(job_id):
                     log.info('TAK Overlay: deleted GeoTIFF for job %s', job_id)
                 # Remove working dir
                 cleanup_working_dir(job_id)
+                # Remove retained WebODM project (v0.7.6+)
+                if target.get('retain_task') and target.get('webodm_project_id'):
+                    _delete_webodm_project_by_id(target['webodm_project_id'])
                 # Remove from index
                 jobs = [j for j in jobs if j['job_id'] != job_id]
                 _write_index(f, jobs)
@@ -354,7 +426,8 @@ def delete_job(job_id):
 def purge_expired_jobs():
     """
     Delete all jobs older than PURGE_HOURS (72h).
-    Removes MBTiles files, working dirs, and index entries.
+    Removes GeoTIFF files, legacy MBTiles (pre-v0.7.8 jobs), working dirs,
+    retained WebODM projects (if any), and index entries.
     Returns the number of jobs purged.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=PURGE_HOURS)
@@ -382,6 +455,9 @@ def purge_expired_jobs():
                 if geotiff and os.path.exists(geotiff):
                     os.remove(geotiff)
                 cleanup_working_dir(job['job_id'])
+                # Clean up retained WebODM project (v0.7.6+)
+                if job.get('retain_task') and job.get('webodm_project_id'):
+                    _delete_webodm_project_by_id(job['webodm_project_id'])
                 log.info('TAK Overlay: purged expired job %s ("%s")',
                          job['job_id'], job['display_name'])
 

@@ -1,230 +1,204 @@
-# TAK Incident Overlay — Changelog
+# Changelog
 
-## v0.7.2 (2026-05-03)
-
-### New Features
-
-**Node Status Indicator (Real-Time)**
-- Added colored status dot in the page header (upper right) showing processing node online/offline state
-- Dot color: green = online, red = offline
-- Label text: "node-odx-1 · online" or "node-odx-1 · offline"
-- Polls every 5 seconds for near-real-time feedback
-- Uses direct health probe (`GET http://node-odx-1:3000/info`) instead of WebODM's cached heartbeat
-  - Result: ~2-5 second detection lag instead of 2-minute lag
-  - Immunity to WebODM's internal heartbeat timeout
-
-**Discrete Phase Tracking**
-- Job processing now displays explicit phase labels instead of a generic "Standby" message
-- Phase label appears below the Standby title during processing
-- Phases: **Queued** → **Processing** → **Finalizing** → **Reprojecting** → **Exporting GeoTIFF** → **Building MBTiles** → **Building Overviews**
-- Each phase corresponds to a pipeline transition, giving operators visibility into what's happening
-- Phase label cleared on job completion/cancellation/failure
-
-### Technical Changes
-
-**archive.py**
-- Added `phase` field to job record schema (initialized to `'Queued'`)
-- `update_job()` accepts arbitrary kwargs, so phase updates work without schema migrations
-
-**pipeline.py**
-- Seven `archive.update_job(job_id, phase='...')` calls inserted at key transitions
-  - After WebODM task creation: `phase='Queued'`
-  - First time ODM status becomes RUNNING: `phase='Processing'`
-  - ODM status 40 (completed): `phase='Finalizing'`
-  - Before gdalwarp: `phase='Reprojecting'`
-  - Before gdal_translate (GeoTIFF): `phase='Exporting GeoTIFF'`
-  - Before gdal_translate (MBTiles): `phase='Building MBTiles'`
-  - Before gdaladdo: `phase='Building Overviews'`
-
-**api.py**
-- `status_view()` now includes `phase` field in JSON response
-- New endpoint: `GET /plugins/tak_incident_overlay/node-status/`
-  - Returns: `{"ok": true, "online": true/false, "name": "node-odx-1"}`
-  - Directly probes node's `/info` endpoint (port 3000) with 2-second timeout
-  - No dependency on WebODM's ProcessingNode heartbeat
-  - Requires: `import requests` (already in Django/WebODM stack)
-
-**plugin.py**
-- Version bumped to 0.7.2
-- Registered new `node-status/` mount point
-
-**manifest.json**
-- Version bumped to 0.7.2
-
-**app.html**
-- Added `.node-status`, `.node-dot`, `.node-label` CSS classes for styling
-- Added `.phase-label` CSS class for the phase text display
-- Node status dot and label added to header (flexbox layout with "powered by webODM" text)
-- Phase label `<div>` added inside the Standby panel, hidden until phase updates arrive
-- JavaScript `checkNodeStatus()` function fetches `/node-status/` and updates dot color + label text
-- JavaScript `updatePhaseLabel(phase)` function displays/hides the phase text
-- `pollStatus()` updated to call `updatePhaseLabel(data.phase)` on each poll
-- `resetToIdle()` calls `updatePhaseLabel('')` to clear phase on job completion
-- Node status polling: `setInterval(checkNodeStatus, 5000)` — every 5 seconds
-- Version comment bumped to v0.7.2
-
-### Bug Fixes
-
-- **Fixed ProcessingNode query:** Removed invalid `.filter(enabled=True)` that was causing "Cannot resolve keyword 'enabled'" errors on startup
-  - WebODM's ProcessingNode model doesn't have an `enabled` field
-  - Query now simple: `ProcessingNode.objects.order_by('id').first()`
-
-### Testing Notes
-
-- Node status indicator updates within 2–5 seconds of a container stop/start
-- Phase labels advance smoothly through the pipeline during normal operation
-- No measurable system load from 5-second polling (12 requests/min, ~1KB payload each)
-- Phase tracking works independently of node status — a job can continue processing even if node indicator flickers
-
-### Deployment
-
-Extract tarball and restart containers:
-```bash
-cd ~/WebODM/coreplugins
-tar -xzf tak_incident_overlay_v0_7_2.tar.gz
-cd ~/WebODM
-docker compose restart webapp worker
-```
-
-No database migrations needed. No settings changes needed. Backward compatible with v0.7.x jobs in the archive.
+All notable changes to this plugin are documented here. Dates are local to
+the Municipality of Anchorage OEM (UTC−8/−9). Version numbers follow the
+informal `MAJOR.MINOR.PATCH` scheme; until 1.0 the MINOR/PATCH split is
+loose.
 
 ---
 
-## v0.7.1 (2026-04-28)
+## [0.7.10] — 2026-06-03
 
-### Changes vs v0.7.0
+### Changed
+- **Processing threads option restricted to {2, 4, 6}** (was {2, 4, 6, 8}).
+  Default remains 4. The 8-thread option was removed for hardware safety on
+  smaller processing nodes where 8 threads can exceed available cores and
+  cause queue stalls. The backend re-validates regardless of frontend state,
+  so any spoofed value falls back to 4.
+- **Runtime estimates refreshed** against final reference-hardware
+  measurements (Lenovo M920q with Intel i5-8500, 4 threads, 65-photo
+  Sutwick dataset): defaults ~3 min, High-Resolution mode ~10 min, Terrain
+  correction ~35 min, both modes combined ~42 min. Previous estimates were
+  noticeably more optimistic for the Terrain-heavy modes; the new numbers
+  reflect how the i5-8500 actually handles dense MVS workloads.
+- **Field Guide shortened.** Section 1 paragraphs consolidated, Section 2
+  toggle descriptions collapsed into a compact bullet list, Section 3
+  prose tightened. Removed the "Not recommended during active sUAS live
+  streams" warnings from the High-Resolution and Terrain correction
+  toggles so the plugin reads as broadly applicable rather than tied to
+  one operational context. Same removal applied in the field guide.
 
-**Zoom Range Expansion**
-- MBTiles base zoom: 21 (65% outsize in gdal_translate)
-- Overview factors: `2 4 8 16 32 64 128 256` (was `2 4 8 16 32`)
-- Result: zoom levels 13–21 coverage (was 16–21)
-- Operators can now zoom out further without blank tiles
+### Fixed
+- **Filename sanitization at download time.** `api._safe_filename` previously
+  allowed spaces through its whitelist as a defensive filter. `archive._sanitize_filename`
+  was the only place spaces actually got replaced with underscores, which left
+  any edge-case record (older index entries, manual edits, paths that bypassed
+  the create_job sanitizer) downloading with spaces in the filename. The
+  download path now mirrors the archive sanitizer — spaces become underscores
+  unconditionally.
+- **Field guide cleanup:** typo fixes ("estabish" → "establish"), a malformed
+  `<p>` tag closed properly, indentation normalized.
+- **Section 3 title broadened** from "Import to CloudTAK" to "Import to TAK",
+  with an explicit compatibility note covering both CloudTAK and TAKAware.
+- **Stale "Both files" reference** in the 72-hour purge callout corrected to
+  "The GeoTIFF" (was inherited from the pre-v0.7.8 MBTiles+GeoTIFF era).
+- **Awkward "Section 3" self-reference** in the import instructions rewritten
+  to refer to the Downloads section by name.
+- **Stale "4-band RGBA" wording** in the `download_geotiff_view` docstring
+  updated to reflect the v0.7.9 JPEG-compressed 3-band RGB + internal-mask
+  output.
 
-**New GeoTIFF Export (v0.7+)**
-- Second deliverable format alongside MBTiles
-- 4-band RGBA GeoTIFF in EPSG:4326 (WGS84)
-- LZW-compressed, tiled format
-- Useful for QGIS, ArcGIS, or TAK server tile workflows
-- Separate download button in the UI
-- File size: ~45–50 MB for typical 70-photo job
-
-**User-Visible Changes**
-- `app.html` rewritten with infra-TAK design system
-  - JetBrains Mono for labels/metadata
-  - DM Sans for body text
-  - Dark-mode-only UI (light/dark toggle in header)
-  - Two-column layout (upload/status on left, Field Guide on right)
-- Field Guide expanded with flight pattern guidance
-  - Standard: lawnmower grid
-  - High Detail: double grid rotated 90°
-  - Altitude: 60–100m AGL recommended
-  - Overlap: 75% frontal, 65% side
-
-**Bug Fixes (v0.7.1 patch)**
-- Fixed function name mismatch: `_export_rgb_geotiff` definition matched call site
-- Removed invalid `-co ALPHA=YES` from GeoTIFF creation (alpha preserved automatically via gdalwarp -dstalpha)
-- User edits to header styling and section labels retained
-
----
-
-## v0.7.0 (2026-04-27)
-
-### Changes vs v0.6.0
-
-**Photo Limit Increase**
-- MAX_PHOTOS: 75 → 100
-- Allows larger incident batches without re-submission
-
-**Output Zoom Range**
-- Base: zoom 21 (gdal_translate -outsize 50%)
-- Overviews: factors `2 4 8 16 32` cover zoom 16–21
-- (Expanded to 13–21 in v0.7.1)
-
-**New RGB GeoTIFF Deliverable**
-- In addition to MBTiles, plugin now exports a 3-band RGB GeoTIFF
-- EPSG:4326 (WGS84), LZW-compressed, tiled
-- Separate download endpoint: `download-geotiff/<job_id>/`
-- archive.py tracks both `file_size_bytes` and `geotiff_size_bytes`
-
-**UI Redesign**
-- Infra-TAK design system implemented
-- Two-column layout
-- Field Guide section with three subsections:
-  1. Image Capture (altitude, overlap, flight patterns, platforms, lighting)
-  2. Upload & Process (workflow steps, runtime expectations)
-  3. Import to CloudTAK (both file formats, app compatibility, purge note)
-- Dark theme default with light/dark toggle
-
-**archive.py Enhancements**
-- Added `geotiff_filename` field to job schema
-- `get_geotiff_path(job)` helper function
-- `mark_completed()` accepts optional `geotiff_path` parameter
-- Backward compatible with v0.6 jobs (v0.6 jobs return None for geotiff_path)
+### Added
+- **New Field Guide bullet documenting Processing threads** — how many
+  cores to choose under what host workload conditions.
+- **Terminal-style bullet list styling** (`.guide-bullets`) for the toggle
+  reference in Section 2.
 
 ---
 
-## v0.6.0 (2026-04-15)
+## [0.7.9] — 2026-06-02
 
-### Initial Production Release
+### Changed
+- **GeoTIFF compression switched from lossless LZW to JPEG (quality 85,
+  YCBCR).** Band 4 alpha is now preserved via a GeoTIFF internal 1-bit
+  mask (`-mask 4` plus `--config GDAL_TIFF_INTERNAL_MASK YES`). Output
+  files dropped ~97–99% in practice — defaults went from 250 MB to 6 MB on
+  the 65-photo Sutwick reference dataset, and the worst-case both-modes
+  output went from 1.2 GB to 9 MB. **Trade-off:** output is now lossy
+  (imperceptible at TAK viewing zooms but not pixel-exact; not suitable as
+  forensic evidence).
+- **Runtime accounting baseline changed.** Times documented from v0.7.9
+  onward measure the full plugin pipeline (queue → archive write),
+  including the GDAL post-processing steps. Earlier ad-hoc comparisons
+  used the WebODM task UI's "Processing Time" which only counts the ODM
+  step itself. The shift in reported defaults runtime (3 min → 5 min on
+  the same dataset) reflects this accounting change, not a regression.
 
-**Core Features**
-- WebODM coreplugin for converting drone photos to MBTiles overlay
-- Async Celery pipeline: upload → WebODM resize (2048px) → ODM processing → GDAL export
-- MBTiles output format with zoom levels 16–21
-- CloudTAK import support (Overlays → Raster)
-- 72-hour auto-purge of completed jobs
-
-**WebODM Integration**
-- Task options: `auto-boundary:true`, `fast-orthophoto:true`
-- ~3–5 minute end-to-end runtime for 30–70 photos
-- Resize mechanism: images capped at 2048px longest side (Pillow LANCZOS, EXIF preserved)
-- Processing node auto-assignment
-
-**GDAL Pipeline**
-- gdalwarp: reproject to EPSG:4326 (WGS84) with -dstalpha
-- gdal_translate: convert to MBTiles with PNG tiles (alpha preserved)
-- gdaladdo: build zoom pyramid (factors 2 4 8 16 32)
-
-**File Outputs**
-- Single MBTiles file per job (~41 MB for typical incident)
-- Stored at `<MEDIA_ROOT>/tak_incident_overlay/<sanitized_name>.mbtiles`
-- Metadata: `type=overlay` (CloudTAK auto-detects as raster overlay)
-
-**UI**
-- Minimal single-page interface
-- Sections: Upload, Status, Downloads, Field Guide
-- Operator-friendly error messages
-- 100-photo limit per job
-- GPS EXIF validation on each photo
-
-**Archive & Lifecycle**
-- JSON index: `index.json` with all job records
-- Working directories: `working/<job_id>/` for staging
-- Auto-purge: jobs older than 72 hours deleted with files
-- Graceful cleanup on cancel/fail
+### Verified
+- Output GeoTIFFs confirmed to import cleanly into both **CloudTAK** and
+  **TAKAware**.
 
 ---
 
-## Known Limitations
+## [0.7.8] — 2026-06-02
 
-- **Node heartbeat lag (WebODM 3.2.2):** ProcessingNode.is_online() has ~2-minute timeout. v0.7.2 works around this with direct health probes.
-- **Fast-orthophoto artifacts:** Vertical surfaces (walls, ridges) show segmentation due to 2.5D surface. Acceptable for geolocation use; consider Quality preset for damage assessment.
-- **Single operator:** Process button disabled during job run; multi-operator simultaneous use undefined.
-- **No job timeout:** If NodeODX hangs, pipeline continues indefinitely. Recommend 4-hour cap in future version.
-- **Alaska-tuned pixel size:** GDAL `-tr 0.000000449` calibrated for ~61°N. Multi-region deployments should compute dynamically.
+### Added
+- **High-Resolution mode toggle** (UI label; internal name `quality_mode`).
+  Raises image resize from 2048 px to 4000 px (native DJI Mini 2 sensor)
+  and pins orthophoto-resolution to 2.5 cm/px. Visibly finer ground detail
+  at roughly 2× runtime.
+- **Terrain correction toggle.** Disables fast-orthophoto so ODM runs the
+  full Structure-from-Motion pipeline (dense MVS + textured mesh +
+  orthorectification). Corrects geometric error from varied terrain and
+  tall vertical features. ~3× runtime cost.
+- **Processing threads radio group** — operator-selectable CPU thread
+  count for ODM processing. Initial allowed values: {2, 4, 6, 8} (8 later
+  removed in v0.7.10). Default 4. Backend validates regardless of
+  frontend state.
+
+### Changed
+- **Quality mode repurposed.** Through v0.7.7, the "Quality mode" toggle
+  disabled fast-orthophoto. In v0.7.8 it was rebranded "High-Resolution
+  mode" and switched to controlling resize + GSD instead. The fast-
+  orthophoto behavior moved to the new Terrain correction toggle.
+- **UI toggle order reorganized** to group processing-quality options:
+  High-capacity → High-Resolution mode → Terrain correction → Processing
+  threads → Save WebODM task.
+- **MBTiles output removed.** GeoTIFF is now the sole deliverable. Pipeline
+  phase list shortened to Queued → Processing → Finalizing → Reprojecting
+  → Exporting GeoTIFF. Legacy MBTiles cleanup logic retained in `archive.py`
+  so pre-v0.7.8 jobs are still purged properly.
+
+### Fixed
+- **`showFlash()` bug** where error flashes were never actually visible.
+  Function was setting `el.style.display = ''` which fell back to the CSS
+  rule `.flash { display: none }`. Changed to `display = 'block'`. This
+  fixed the silent failure when operators selected more than 150 photos
+  without enabling High-capacity mode.
 
 ---
 
-## Future Candidates
+## [0.7.7] — 2026-04-29
 
-**v0.8 (near-term)**
-- Job timeout (~4 hours)
-- Auto-push to CloudTAK (direct import API)
-- Dynamic `-tr` calculation based on centroid latitude
+### Added
+- **Quality mode toggle** (later repurposed in v0.7.8). At this stage it
+  disabled fast-orthophoto, running the full SfM pipeline for higher-
+  quality output.
 
-**v2.0 (medium-term)**
-- Pre-upload image resize (normalize runtime across sensors)
-- Quality preset toggle (no fast-orthophoto, real MVS, slower but better vertical detail)
-- GPU acceleration (CUDA-enabled NodeODX)
-- GSD table (sensor-specific estimates)
-- COG output (Cloud-Optimized GeoTIFF for tile servers)
+---
+
+## [0.7.6]
+
+### Added
+- **Save WebODM task toggle.** When enabled, the WebODM project is not
+  auto-deleted at job completion. It remains accessible in WebODM until
+  the 72-hour purge job cleans up the corresponding archive record. A
+  direct link to the WebODM task appears in the archive row.
+
+---
+
+## [0.7.5]
+
+### Added
+- **High-capacity mode toggle.** Raises the per-job photo limit from 150
+  to 300.
+
+---
+
+## [0.7.2]
+
+### Added
+- **Discrete phase labels** during processing. Plugin now reports
+  intermediate states (Reprojecting, Exporting GeoTIFF, etc.) via
+  `archive.update_job(phase=...)` rather than a single "Standby" message.
+- **Processing node status indicator** in the header. Real-time online/
+  offline state via a node health probe.
+
+---
+
+## [0.7.1]
+
+### Added
+- **GeoTIFF output** (4-band RGBA in EPSG:4326) alongside the existing
+  MBTiles. Useful for QGIS/ArcGIS/TAK server tile workflows. Initially
+  LZW-compressed; switched to JPEG in v0.7.9.
+
+### Changed
+- **MBTiles zoom range widened** from 15–21 to 13–21 via expanded
+  gdaladdo overview factors.
+
+---
+
+## [0.7.0]
+
+### Changed
+- Initial v0.7 line — substantial reworking of the GDAL pipeline and job
+  record format. Job records from v0.6.x or earlier are not readable by
+  v0.7.x.
+
+---
+
+## [0.6.0]
+
+### Changed
+- **TASK_OPTIONS simplified** to `auto-boundary:true` and
+  `fast-orthophoto:true` only, with all other options left at NodeODX
+  defaults. Replaced the over-specified v0.5.1 preset that had been
+  triggering validation errors.
+- **WebODM-native image resize introduced** (`resize_to=2048`,
+  `pending_action=RESIZE`). Resize acts as a natural gate between image
+  staging and ODM dispatch, resolving a long-standing race condition where
+  `process_task` could fire before images were fully staged.
+
+---
+
+## [0.5.1]
+
+### Notes
+- Last release before the v0.6.0 simplification. Used an over-specified
+  TASK_OPTIONS preset (`skip-3dmodel`, `skip-report`,
+  `orthophoto-resolution:5`, `feature-quality:ultra`,
+  `min-num-features:20000`) which produced validation errors on some
+  datasets.
+
+---

@@ -1,5 +1,5 @@
 """
-pipeline.py — TAK Incident Overlay plugin (v0.7.2)
+pipeline.py — TAK Incident Overlay plugin (v0.7.10)
 Async WebODM task creation, polling, and GDAL export pipeline.
 
 Entry point:  start(job_id, saved_paths)
@@ -26,22 +26,74 @@ CRITICAL — async function self-containment:
 Design decisions:
   - Polling loop for task completion (simpler/more debuggable than signals)
   - One new WebODM project per job (cleaner isolation, easier cleanup)
-  - Delete WebODM project on both success and failure (disk space matters)
+  - Delete WebODM project after the job finishes — unless retain_task=True
+    (v0.7.6+), in which case it lives until the 72h auto-purge
+
+v0.7.10 changes vs v0.7.9:
+  - Removed the 8-thread option from the Processing threads radio group.
+    Allowed values are now {2, 4, 6}; default remains 4. This keeps the
+    plugin safer on smaller processing nodes where allowing 8 threads
+    could exceed available cores and cause queue stalls.
+  - Runtime estimates throughout the docs refreshed against final
+    reference-hardware measurements (Lenovo M920q with Intel i5-8500,
+    4 threads, 65-photo Sutwick dataset): defaults ~3 min, quality_mode
+    ~10 min, terrain_correction ~35 min, both ~42 min. Older docs were
+    noticeably more optimistic on the dense-MVS modes; this matches what
+    the i5-8500 actually delivers under real load.
+  - Field guide shortened (Section 1 paragraphs consolidated, Section 2
+    toggle descriptions collapsed into a bullet list, Section 3 tightened).
+    sUAS live-stream warnings removed from the High-Resolution and Terrain
+    correction toggles and from the field guide, so the plugin reads as
+    broadly applicable rather than tied to one operational context.
+  - Field guide cleanup: typo fixes ("estabish" → "establish"), a malformed
+    `<p>` tag closed properly, Section 3 title broadened from "Import to
+    CloudTAK" to "Import to TAK" with TAKAware compatibility called out,
+    stale "Both files" reference (from the pre-v0.7.8 MBTiles era) updated
+    to "The GeoTIFF", and the awkward "Section 3" self-reference rewritten
+    to point at the Downloads section by name.
+  - api._safe_filename now mirrors archive._sanitize_filename — spaces
+    become underscores at download time (was passing them through), so
+    legacy records or any path that bypassed the create-time sanitizer
+    still serve with a clean filename.
+
+v0.7.9 changes vs v0.7.8:
+  - GeoTIFF compression switched from lossless LZW to JPEG_QUALITY=85 with
+    PHOTOMETRIC=YCBCR. Band 4 alpha is preserved via a GeoTIFF internal
+    1-bit mask (stripped from the data bands by `-mask 4`). Output files
+    are ~97-99% smaller in practice — measured on the 65-photo Sutwick
+    dataset, defaults went from 250 MB to 6 MB and the worst-case both-modes
+    output went from 1.2 GB to 9 MB. Trade-off: lossy compression
+    (imperceptible at TAK viewing zooms, but the output is no longer
+    pixel-exact and not suitable as forensic evidence). Verified to import
+    cleanly into CloudTAK and TAKAware.
+  - Runtime numbers documented from v0.7.9 onward measure the FULL plugin
+    pipeline (queue → archive write), including GDAL reproject and GeoTIFF
+    export. Earlier ad-hoc comparisons used the WebODM task UI's
+    "Processing Time" which counts only the ODM step; the GDAL post-
+    processing adds a small amount on top. Absolute times also vary with
+    host hardware and system load — see the measurement table near
+    _run_pipeline() for the reference-hardware baseline.
+
+v0.7.8 changes vs v0.7.7:
+  - MBTiles output removed entirely. GeoTIFF is the only deliverable.
+    Phases: Queued → Processing → Finalizing → Reprojecting → Exporting GeoTIFF.
+  - Quality mode repurposed: now means "high-res" — raises resize to 4000px
+    and sets orthophoto-resolution to 2.5 cm/px. Used to mean "full SfM
+    pipeline (no fast-orthophoto)" — fast-orthophoto stays enabled now.
+  - max-concurrency: 4 baked in, matching the i5-8500-class hardware this
+    plugin is deployed on.
+  - app.html showFlash() bug fixed (was setting display: '' which fell back
+    to CSS display:none — now sets display: 'block').
 
 v0.7.2 changes vs v0.7.1:
   - Phase tracking: archive.update_job(phase=...) called at each pipeline
     transition so the frontend can display discrete state labels rather than
-    a static Standby message. Phases: Queued → Processing → Finalizing →
-    Reprojecting → Exporting GeoTIFF → Building MBTiles → Building Overviews.
+    a static Standby message.
 
 v0.7.1 changes vs v0.6.0:
-  - Zoom range widened from 15–21
-      * gdal_translate -outsize 65%  → base zoom 21
-      * gdaladdo factor list adds 256  → reaches zoom 13
-  - New _export_rgb_geotiff() step produces a 4-band RGBA GeoTIFF in EPSG:4326
-    alongside the MBTiles. Useful for QGIS/ArcGIS/TAK server tile workflows
-    that prefer plain GeoTIFF. LZW + TILED
-    keeps the file workable.
+  - New _export_rgb_geotiff() step produces a 4-band RGBA GeoTIFF in EPSG:4326.
+    Useful for QGIS/ArcGIS/TAK server tile workflows. Initially LZW + TILED;
+    in v0.7.9 the compression became JPEG with internal alpha mask (see above).
 
 Pre-stage path note (Session 7):
   WebODM's Task.process() scans the task ROOT directory, not an images/
@@ -54,21 +106,31 @@ Pre-stage path note (Session 7):
   Fix: stage images at the task root directly. Output assets land at
   <task_root>/assets/odm_orthophoto/odm_orthophoto.tif — no collision.
 
-TASK_OPTIONS rationale (v0.6.0 — simplified from v0.5.1):
-  Investigation on a reference WebODM instance showed that the native WebODM UI run used only:
-      auto-boundary:true   — crop output to actual flight area, not bounding box
-      fast-orthophoto:true — skip MVS densification (~80% time reduction)
-  with all other settings left at NodeODX defaults. That 37-image run completed
-  in under 3 minutes with good quality.
+TASK_OPTIONS rationale (current as of v0.7.8):
+  Standard run uses two always-on options plus one conditional:
+      auto-boundary:true              — crop output to actual flight area
+      max-concurrency:<operator>      — operator-selected CPU thread count
+                                          (default 4, allowed {2, 4, 6})
+      fast-orthophoto:true            — ON by default (~80% time reduction
+                                          via skipped MVS densification);
+                                          OFF when terrain_correction enabled
+  Quality mode (UI: "High-Resolution mode") adds:
+      orthophoto-resolution: 2.5 cm/px (and bumps RESIZE_TO to 4000)
+  Terrain correction simply removes fast-orthophoto from the list, letting
+  ODM run the full SfM pipeline.
 
-  Our v0.5.1 preset (skip-3dmodel, skip-report, orthophoto-resolution:5,
-  feature-quality:ultra, min-num-features:20000) was over-specified and caused
-  validation errors in Sessions 5/6. Those options are removed.
+  History: v0.5.1 ran a much larger preset (skip-3dmodel, skip-report,
+  orthophoto-resolution:5, feature-quality:ultra, min-num-features:20000)
+  that was over-specified and triggered validation errors. v0.6.0 stripped
+  it back to auto-boundary + fast-orthophoto only. v0.7.8 added the
+  max-concurrency cap (initially hardcoded to 4; now operator-selectable),
+  reintroduced orthophoto-resolution as a Quality-mode-only opt-in, and
+  made fast-orthophoto conditional via the terrain_correction toggle.
 
 WebODM resize mechanism (v0.6.0 — new):
   The WebODM GUI "Resize images" option is NOT an ODM task option — it never
   appears in Task.options. It is server-side pre-processing:
-    1. Task created with resize_to=2048 field + pending_action=RESIZE
+    1. Task created with resize_to=N field + pending_action=RESIZE
     2. Worker calls task.resize_images() — Pillow LANCZOS resize, EXIF preserved
        inline (no exiftool needed for JPEGs; Pillow carries GPS EXIF through)
     3. Worker clears pending_action, THEN assigns processing node and starts ODM
@@ -77,10 +139,12 @@ WebODM resize mechanism (v0.6.0 — new):
   dispatch — it fully resolves the Session 6 race condition (process_task
   firing before images are ready) as a side effect.
 
-  resize_to=2048 targets the longest side of each image. DJI Mini 2 photos
-  are 4000x3000; this halves pixel count to ~2000x1500. Measured effect:
-  similar processing time to non-resized, similar output quality for the
-  orthophoto use case (features are still detectable at 2048px).
+  resize_to targets the longest side of each image. DJI Mini 2 photos are
+  4000x3000. Default mode uses resize_to=2048 (halves pixel count for faster
+  processing — output GSD bottoms out around 4 cm regardless of any
+  orthophoto-resolution setting). Quality mode uses resize_to=4000 (native
+  sensor resolution) so the 2.5 cm/px orthophoto-resolution can actually be
+  resolved from real data rather than upsampled.
 """
 
 import logging
@@ -94,21 +158,51 @@ logger = logging.getLogger('app.plugins.tak_incident_overlay')
 # Public entry point — called by api.py from the webapp container
 # ---------------------------------------------------------------------------
 
-def start(job_id, saved_paths):
+def start(job_id, saved_paths, retain_task=False, quality_mode=False,
+          terrain_correction=False, max_concurrency=4):
     """
     Kick off the async pipeline.  Returns immediately — all real work happens
     in _run_pipeline() via Celery in the worker container.
 
     Args:
-        job_id      (str): UUID from archive.create_job()
-        saved_paths (list[str]): Absolute paths to uploaded JPEG images on disk,
-                                  inside archive.get_images_dir(job_id).
+        job_id             (str): UUID from archive.create_job()
+        saved_paths        (list[str]): Absolute paths to uploaded JPEG images on disk,
+                                         inside archive.get_images_dir(job_id).
+        retain_task        (bool): If True, the WebODM project is NOT deleted after
+                                    the pipeline completes. It stays in WebODM for
+                                    up to 72 hours until purge_expired_jobs() cleans it.
+        quality_mode       (bool): If True, runs the high-resolution variant:
+                                    image resize raised from 2048 to 4000 px and
+                                    orthophoto-resolution pinned to 2.5 cm/px.
+                                    Reference hardware (M920q i5-8500), 65-photo
+                                    job at 4 threads: ~10 min vs ~3 min default;
+                                    output file 9.0 MB vs 6.1 MB default.
+                                    UI label: "High-Resolution mode".
+        terrain_correction (bool): If True, fast-orthophoto is omitted from
+                                    TASK_OPTIONS and ODM runs the full SfM
+                                    pipeline (dense MVS, mesh, textured
+                                    orthorectification). Corrects geometric
+                                    error from varied terrain and tall vertical
+                                    features. Reference hardware (M920q
+                                    i5-8500), 65-photo job at 4 threads:
+                                    ~35 min vs ~3 min default; ~42 min when
+                                    combined with quality_mode.
+                                    UI label: "Terrain correction".
+        max_concurrency    (int): Number of CPU threads ODM uses during processing.
+                                    Must be one of {2, 4, 6}. Defaults to 4.
+                                    Caller (api.py) validates the value; pipeline
+                                    trusts what it receives.
     """
     from app.plugins.worker import run_function_async
     logger.info(
         f"[TAK] {job_id}: Queuing pipeline with {len(saved_paths)} images"
+        f"{' (retain_task=True)' if retain_task else ''}"
+        f"{' (quality_mode=True)' if quality_mode else ''}"
+        f"{' (terrain_correction=True)' if terrain_correction else ''}"
+        f" (max_concurrency={max_concurrency})"
     )
-    run_function_async(_run_pipeline, job_id, saved_paths)
+    run_function_async(_run_pipeline, job_id, saved_paths, retain_task,
+                       quality_mode, terrain_correction, max_concurrency)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +211,9 @@ def start(job_id, saved_paths):
 # See the module-level docstring for the rationale.
 # ---------------------------------------------------------------------------
 
-def _run_pipeline(job_id, saved_paths, progress_callback=None):
+def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
+                  terrain_correction=False, max_concurrency=4,
+                  progress_callback=None):
     """
     Full pipeline — runs asynchronously inside the Celery worker container.
 
@@ -130,17 +226,17 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
     Sequence:
       1. Create a WebODM project (one per job)
       2. Pre-stage images at the task ROOT directory (NOT 'images/' subdir)
-      3. Create a WebODM task with pk=task_uuid, resize_to=2048,
-         pending_action=RESIZE — worker resizes images before ODM dispatch
+      3. Create a WebODM task with pk=task_uuid, resize_to=2048 (or 4000 in
+         quality_mode), pending_action=RESIZE — worker resizes images before
+         ODM dispatch
       4. Poll until task reaches a terminal state
       5. Locate the orthophoto produced by WebODM/ODM
-      6. gdalwarp  — reproject to EPSG:4326 (produces wgs84.tif)
-      7. gdal_translate — 4-band RGBA GeoTIFF
-      8. gdal_translate -of MBTiles  — convert to raster tiles
-      9. gdaladdo  — build zoom pyramid (required for non-blank client display)
-     10. Mark job completed / failed in archive
-     11. Delete WebODM project + task (always — disk space)
-     12. Delete working directory (always)
+      6. gdalwarp        — reproject to EPSG:4326 (produces wgs84.tif)
+      7. gdal_translate  — 3-band RGB GeoTIFF, JPEG compression, internal
+                            alpha mask (v0.7.9; was 4-band RGBA LZW in v0.7.8)
+      8. Mark job completed / failed in archive
+      9. Delete WebODM project + task (unless retain_task)
+     10. Delete working directory (always)
     """
     # =====================================================================
     # ALL imports inside — see module docstring
@@ -177,23 +273,59 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
     POLL_INTERVAL = 15
 
     # =====================================================================
-    # TASK_OPTIONS — minimal proven set (v0.6.0)
+    # TASK_OPTIONS — minimal proven set
     #
-    # Validated against native WebODM UI run on reference hardware:
-    #   37 images, auto-boundary:true + fast-orthophoto:true only
-    #   Completed in <3 min, good quality output
+    # Always-on:
+    #   auto-boundary:true            — crop output to actual flight area
+    #   max-concurrency:<operator>    — operator-selected CPU thread count
+    #                                    (default 4, allowed {2, 4, 6});
+    #                                    api.py validates before we see it
     #
-    # Everything else left to NodeODX defaults.
+    # Conditional:
+    #   fast-orthophoto:true          — added UNLESS terrain_correction is on.
+    #                                    Skip it and ODM runs the full SfM
+    #                                    pipeline (dense MVS + mesh + textured
+    #                                    orthorectification), which corrects
+    #                                    geometric error from varied terrain
+    #                                    and tall vertical features.
+    #
+    # Measured timing — 65-photo job, 4 threads, identical dataset
+    # (Sutwick area, June 2026), reference hardware: Lenovo M920q with
+    # Intel i5-8500 (6 cores). Sizes are v0.7.9 (JPEG q=85 output).
+    #
+    # NOTE: timings are full plugin pipeline (queue → archive write),
+    # INCLUDING the gdalwarp reproject and gdal_translate GeoTIFF export
+    # steps that run after ODM completes. They are NOT directly comparable
+    # to the "Processing Time" shown in the WebODM task UI, which only
+    # tracks the ODM photogrammetry step itself.
+    #
+    #     defaults                  ~3 min    GSD 5.1 cm    6.1 MB output
+    #     + quality_mode           ~10 min    GSD 2.6 cm    9.0 MB output
+    #     + terrain_correction     ~35 min    GSD 5.1 cm    7.2 MB output
+    #     both enabled             ~42 min    GSD 2.6 cm    9.4 MB output
+    #
+    # quality_mode (v0.7.8 — repurposed): adds an explicit
+    #   orthophoto-resolution: 2.5 cm/px and raises RESIZE_TO to 4000 (below).
+    #   Use when finer ground detail is required and longer runtime is acceptable.
     # =====================================================================
     TASK_OPTIONS = [
         {'name': 'auto-boundary',   'value': True},
-        {'name': 'fast-orthophoto', 'value': True},
+        {'name': 'max-concurrency', 'value': max_concurrency},
     ]
+    if not terrain_correction:
+        TASK_OPTIONS.append({'name': 'fast-orthophoto', 'value': True})
+    if quality_mode:
+        TASK_OPTIONS.append({'name': 'orthophoto-resolution', 'value': 2.5})
 
     # Target longest side in pixels for pre-processing resize.
     # WebODM's server-side resize_image() uses Pillow LANCZOS and preserves
     # EXIF (including GPS) inline. resize_to=-1 disables resize.
-    RESIZE_TO = 2048
+    #
+    # Default 2048: halves DJI Mini 2 4000x3000 to ~2000x1500. Faster runs;
+    # output GSD floor around 4.3 cm regardless of orthophoto-resolution.
+    # Quality mode 4000: native sensor resolution. Required to actually
+    # resolve a 2.5 cm/px orthophoto.
+    RESIZE_TO = 4000 if quality_mode else 2048
 
     # =====================================================================
     # Nested helpers — share scope (subprocess, logger, etc.) via closure
@@ -234,17 +366,37 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
 
     def _export_rgb_geotiff(wgs84_tif, output_geotiff):
         """
-        Export the WGS84 reprojected raster as a 4-band RGBA GeoTIFF.
+        Export the WGS84 reprojected raster as a 3-band RGB GeoTIFF with
+        JPEG compression and an internal 1-bit mask preserving the flight
+        boundary alpha.
 
-        gdalwarp -dstalpha produces a 4-band output where band 4 is already
-        typed as alpha in the TIFF metadata. Passing no -b selectors copies
-        all 4 bands intact — the alpha boundary is preserved automatically.
-        No -co ALPHA=YES needed (not a valid GeoTIFF creation option).
+        JPEG doesn't natively support 4-band imagery — we strip the input's
+        band 4 alpha into a GeoTIFF internal mask using `-b 1 -b 2 -b 3
+        -mask 4`. GDAL_TIFF_INTERNAL_MASK=YES (passed via --config) tells
+        GDAL to store that mask inside the same .tif rather than as a
+        sidecar .msk file.
+
+        JPEG_QUALITY=85 with PHOTOMETRIC=YCBCR is the standard "high
+        quality" photo JPEG profile. Artifacts are imperceptible at the
+        zoom levels TAK clients render overlays at, while file size drops
+        by 1-2 orders of magnitude vs lossless LZW (used through v0.7.8).
+        Measured on the 65-photo Sutwick dataset: default-mode output went
+        from 250 MB to 6.0 MB; worst-case (both modes) went from 1.2 GB
+        to 9.3 MB.
+
+        Note that this is now a lossy export. Per-pixel values change
+        slightly. Not suitable as forensic evidence; fine for situational
+        awareness, geolocation reference, and CloudTAK/ATAK overlays.
         """
         result = subprocess.run(
             [
                 'gdal_translate',
-                '-co', 'COMPRESS=LZW',
+                '--config', 'GDAL_TIFF_INTERNAL_MASK', 'YES',
+                '-b', '1', '-b', '2', '-b', '3',
+                '-mask', '4',
+                '-co', 'COMPRESS=JPEG',
+                '-co', 'JPEG_QUALITY=85',
+                '-co', 'PHOTOMETRIC=YCBCR',
                 '-co', 'TILED=YES',
                 wgs84_tif,
                 output_geotiff,
@@ -255,69 +407,6 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         )
         if result.stderr:
             logger.debug(f"[TAK] gdal_translate (geotiff) stderr: {result.stderr.strip()}")
-
-    def _convert_to_mbtiles(wgs84_tif, output_mbtiles):
-        """
-        Convert WGS84 GeoTIFF to MBTiles raster format.
-
-        Key flags:
-          -of MBTiles               GDAL native MBTiles raster driver
-          -co TILE_FORMAT=PNG       Preserves alpha channel for irregular flight boundaries
-          -co ZOOM_LEVEL_STRATEGY=UPPER
-                                    Selects zoom at or above native resolution
-          -outsize 65% 65%          Downsamples,
-                                    landing the base tile layer at zoom 21.
-                                    Combined with the factor-64 overview, this gives
-                                    the file a 13–21 zoom range. Workaround for the
-                                    ZOOM_LEVEL creation option not being supported in
-                                    GDAL 3.4.1.
-
-        NOTE: Do NOT add -co ZOOM_LEVEL=N here — not supported in GDAL 3.4.1 and
-        will produce a Warning 6 while silently ignoring the option.
-        """
-        result = subprocess.run(
-            [
-                'gdal_translate',
-                '-of', 'MBTiles',
-                '-co', 'TILE_FORMAT=PNG',
-                '-co', 'ZOOM_LEVEL_STRATEGY=UPPER',
-                '-outsize', '65%', '65%',
-                wgs84_tif,
-                output_mbtiles,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if result.stderr:
-            logger.debug(f"[TAK] gdal_translate stderr: {result.stderr.strip()}")
-
-    def _build_overviews(mbtiles_path):
-        """
-        Build zoom pyramid for the MBTiles file.
-
-        Required — without overview levels, TAK clients display blank tiles when
-        the operator zooms out past the base zoom level. With v0.7.1's 65% outsize,
-        the base zoom is 21, and overview factors 2 4 8 16 32 64 128 256 cover zoom
-        levels 13–19. Final coverage: zooms 13–20.
-
-        Field tile range comparison:
-          v0.6 base 21, factors 2..32   → zooms 16..21
-          v0.7.1 base 21, factors 2..256   → zooms 13..21
-        """
-        result = subprocess.run(
-            [
-                'gdaladdo',
-                '-r',    'average',
-                mbtiles_path,
-                '2', '4', '8', '16', '32', '64',  '128', '256',
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if result.stderr:
-            logger.debug(f"[TAK] gdaladdo stderr: {result.stderr.strip()}")
 
     def _delete_webodm_project(project):
         """
@@ -361,7 +450,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
             raise RuntimeError("No superuser account found — cannot create WebODM project")
 
         project = Project.objects.create(
-            name=f"TAK {display_name}",
+            name=f"TAK {display_name} [{job_id[:8]}]",
             owner=user,
         )
         archive.update_job(job_id, webodm_project_id=project.id)
@@ -416,7 +505,7 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         task = Task.objects.create(
             pk=task_uuid,
             project=project,
-            name=display_name,
+            name=f"{display_name} [{job_id[:8]}]",
             auto_processing_node=True,
             images_count=len(saved_paths),
             options=TASK_OPTIONS,
@@ -496,15 +585,13 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         logger.info(f"[TAK] {job_id}: Orthophoto located at {ortho_path}")
 
         # ------------------------------------------------------------------
-        # Steps 6–9 — GDAL pipeline
+        # Steps 6–7 — GDAL pipeline
         #
-        # v0.7.0 adds a parallel RGB GeoTIFF deliverable derived from the
-        # same WGS84 reprojection. Both outputs land in the archive
-        # directory (NOT working_dir) so they survive the cleanup step.
+        # Output GeoTIFF lands in the archive directory (NOT working_dir)
+        # so it survives the cleanup step.
         # ------------------------------------------------------------------
         working_dir  = archive.get_working_dir(job_id)
         wgs84_tif    = os.path.join(working_dir, 'wgs84.tif')
-        mbtiles_path = archive.get_mbtiles_path(job)
         geotiff_path = archive.get_geotiff_path(job)
 
         archive.update_job(job_id, phase='Reprojecting')
@@ -517,34 +604,17 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         _export_rgb_geotiff(wgs84_tif, geotiff_path)
         logger.info(f"[TAK] {job_id}: GeoTIFF export complete → {geotiff_path}")
 
-        archive.update_job(job_id, phase='Building MBTiles')
-        logger.info(f"[TAK] {job_id}: Phase → Building MBTiles")
-        _convert_to_mbtiles(wgs84_tif, mbtiles_path)
-        logger.info(f"[TAK] {job_id}: MBTiles conversion complete → {mbtiles_path}")
-
-        archive.update_job(job_id, phase='Building Overviews')
-        logger.info(f"[TAK] {job_id}: Phase → Building Overviews")
-        _build_overviews(mbtiles_path)
-        logger.info(f"[TAK] {job_id}: Zoom pyramid built")
-
-        # Sanity check — both outputs must exist and be non-empty
-        if not os.path.exists(mbtiles_path) or os.path.getsize(mbtiles_path) == 0:
-            raise RuntimeError(
-                "MBTiles file missing or empty after GDAL pipeline. "
-                "Check disk space and GDAL logs above."
-            )
+        # Sanity check — output must exist and be non-empty
         if not os.path.exists(geotiff_path) or os.path.getsize(geotiff_path) == 0:
             raise RuntimeError(
                 "GeoTIFF file missing or empty after GDAL pipeline. "
                 "Check disk space and GDAL logs above."
             )
 
-        mbtiles_mb = os.path.getsize(mbtiles_path) / 1024 / 1024
         geotiff_mb = os.path.getsize(geotiff_path) / 1024 / 1024
-        archive.mark_completed(job_id, mbtiles_path, geotiff_path)
+        archive.mark_completed(job_id, geotiff_path)
         logger.info(
-            f"[TAK] {job_id}: Pipeline complete — MBTiles {mbtiles_mb:.1f} MB, "
-            f"GeoTIFF {geotiff_mb:.1f} MB"
+            f"[TAK] {job_id}: Pipeline complete — GeoTIFF {geotiff_mb:.1f} MB"
         )
 
     except subprocess.CalledProcessError as exc:
@@ -561,6 +631,13 @@ def _run_pipeline(job_id, saved_paths, progress_callback=None):
         archive.mark_failed(job_id, str(exc))
 
     finally:
-        # Always clean up — disk space is precious on-scene
-        _delete_webodm_project(project)
+        # Conditionally delete WebODM project — skip if operator requested retention.
+        # Retained projects are cleaned up by purge_expired_jobs() at 72 hours.
+        if retain_task and project is not None:
+            logger.info(
+                f"[TAK] {job_id}: WebODM project {project.id} retained "
+                f"(auto-purge with job at 72h)"
+            )
+        else:
+            _delete_webodm_project(project)
         archive.cleanup_working_dir(job_id)

@@ -116,6 +116,16 @@
             color: var(--text-muted);
         }
 
+        .app-header__powered {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .app-header__powered:hover { color: var(--text-base); }
+
         /* ── Main two-column layout ──────────────────────────────── */
         .app-main {
             flex: 1 1 auto;
@@ -519,10 +529,19 @@
             white-space: nowrap;
         }
         .archive-actions {
-            display: flex;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 6px;
-            justify-content: flex-end;
-            flex-wrap: wrap;
+            justify-items: stretch;
+        }
+
+        .archive-actions__row {
+            display: contents;
+        }
+
+        .archive-actions__row .btn {
+            text-align: center;
+            justify-content: center;
         }
 
         /* ── Node status indicator (v0.7.2) ─────────────────────── */
@@ -563,6 +582,159 @@
             color: var(--accent-green);
             text-align: center;
         }
+
+        /* ── High-capacity toggle (v0.7.3) ────────────────────────── */
+        .capacity-block {
+            margin-top: -8px;
+        }
+        .capacity-toggle {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            user-select: none;
+            padding: 10px 0;
+        }
+        .capacity-toggle input[type="checkbox"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+            pointer-events: none;
+        }
+        .capacity-toggle__slider {
+            position: relative;
+            display: inline-block;
+            width: 36px;
+            height: 18px;
+            flex: 0 0 36px;
+            background: var(--border-strong);
+            border-radius: 9px;
+            transition: background 0.18s ease;
+        }
+        .capacity-toggle__slider::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 14px;
+            height: 14px;
+            background: var(--text-muted);
+            border-radius: 50%;
+            transition: transform 0.18s ease, background 0.18s ease;
+        }
+        .capacity-toggle input:checked + .capacity-toggle__slider {
+            background: var(--accent-green);
+        }
+        .capacity-toggle input:checked + .capacity-toggle__slider::after {
+            transform: translateX(18px);
+            background: #fff;
+        }
+        .capacity-toggle__label {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-primary);
+        }
+        .capacity-toggle__hint {
+            font-weight: 400;
+            color: var(--text-muted);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .capacity-warning {
+            margin-top: 6px;
+            margin-bottom: 8px;
+            padding: 14px 14px 10px 14px;
+            background: rgba(255, 170, 0, 0.06);
+            border: 1px solid rgba(255, 170, 0, 0.35);
+            border-left: 3px solid #ffaa00;
+            border-radius: 4px;
+        }
+        .capacity-warning__title {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: #ffaa00;
+            margin-bottom: 8px;
+        }
+        .capacity-warning__body {
+            font-family: var(--font-body);
+            font-size: 13px;
+            line-height: 1.55;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+        .capacity-toggle--confirm {
+            border-top: 1px solid rgba(255, 170, 0, 0.25);
+            margin-top: 8px;
+            padding-top: 10px;
+            padding-bottom: 4px;
+        }
+
+        /* ── Processing threads radio group (v0.7.8) ───────────────── */
+        .thread-radio__heading {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-primary);
+            margin-bottom: 10px;
+        }
+        .thread-radio__heading .capacity-toggle__hint {
+            font-weight: 400;
+            color: var(--text-muted);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .thread-radio-group {
+            display: inline-flex;
+            gap: 6px;
+        }
+        .thread-radio {
+            cursor: pointer;
+            user-select: none;
+        }
+        .thread-radio input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+            pointer-events: none;
+        }
+        .thread-radio__label {
+            display: inline-block;
+            min-width: 38px;
+            text-align: center;
+            padding: 6px 12px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-input);
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            transition: border-color 0.12s, color 0.12s, background 0.12s;
+        }
+        .thread-radio:hover .thread-radio__label {
+            border-color: var(--accent-green-dim);
+            color: var(--text-primary);
+        }
+        .thread-radio input[type="radio"]:checked + .thread-radio__label {
+            background: var(--bg-success-soft);
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+        .thread-radio input[type="radio"]:focus-visible + .thread-radio__label {
+            box-shadow: var(--shadow-focus);
+        }
+
         .guide-header {
             display: flex;
             align-items: center;
@@ -616,6 +788,26 @@
         }
         .guide-prose p { margin: 0 0 10px 0; }
         .guide-prose p:last-child { margin-bottom: 0; }
+        .guide-bullets {
+            margin: 0 0 10px 0;
+            padding-left: 18px;
+            list-style: none;
+        }
+        .guide-bullets li {
+            position: relative;
+            padding-left: 2px;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            line-height: 1.55;
+        }
+        .guide-bullets li:last-child { margin-bottom: 0; }
+        .guide-bullets li::before {
+            content: "›";
+            position: absolute;
+            left: -14px;
+            color: var(--accent);
+            font-weight: 700;
+        }
         .guide-prose strong {
             color: var(--text-primary);
             font-weight: 600;
@@ -660,7 +852,7 @@
                 <span id="node-dot" class="node-dot node-dot--unknown"></span>
                 <span id="node-label" class="node-label">node-odx-1 · checking</span>
             </div>
-            <div class="app-header__powered">powered by webODM</div>
+            <a class="app-header__powered" href="https://webodm.org/" target="_blank">powered by webODM</a>
         </div>
     </header>
 
@@ -684,11 +876,11 @@
                 <div class="section__body">
 
                     <div class="field-row">
-                        <label for="incident-name" class="field-label">Incident Name or Number</label>
+                        <label for="incident-name" class="field-label">Location of Incident</label>
                         <input type="text"
                                id="incident-name"
                                class="input"
-                               placeholder="e.g. Warehouse Fire, 2026-0421"
+                               placeholder="e.g. Eagle River Rd MP 12, Campbell Creek Trail"
                                autocomplete="off"
                                maxlength="80">
                         <div class="field-hint">Becomes the output filename. Spaces become underscores; a date-time stamp is appended automatically.</div>
@@ -699,14 +891,86 @@
                         <div id="drop-zone" class="drop-zone">
                             <i class="fa fa-camera drop-zone__icon" id="drop-zone-icon" aria-hidden="true"></i>
                             <div class="drop-zone__primary" id="drop-zone-primary">Click to select photos</div>
-                            <div class="drop-zone__secondary" id="drop-zone-secondary">JPEG only · GPS-tagged · max 100 photos</div>
+                            <div class="drop-zone__secondary" id="drop-zone-secondary">JPEG only · GPS-tagged · max 150 photos</div>
                             <input type="file"
                                    id="photo-input"
                                    class="drop-zone__file-input"
-                                   accept="image/jpeg,image/jpg,.jpg,.jpeg"
+                                   accept="image/jpeg,image/jpg,.jpeg,.jpg"
                                    multiple
                                    onchange="onFilesSelected(this)">
                         </div>
+                    </div>
+
+                    <!-- High-capacity mode toggle (v0.7.5) ───────────────── -->
+                    <div class="field-row capacity-block">
+                        <label class="capacity-toggle">
+                            <input type="checkbox"
+                                   id="high-capacity-toggle"
+                                   onchange="onHighCapacityToggled()">
+                            <span class="capacity-toggle__slider" aria-hidden="true"></span>
+                            <span class="capacity-toggle__label">High-capacity mode <span class="capacity-toggle__hint">— up to 300 images</span></span>
+                        </label>
+
+                        <div id="capacity-warning-line" style="display:none; margin-top:7px; font-family:var(--font-mono); font-size:10px; color:var(--accent-amber); letter-spacing:0.04em;">
+                            ⚠ Processing 300 images will significantly extend job runtime.
+                        </div>
+                    </div>
+
+                    <!-- High-Resolution mode toggle (v0.7.8 — renamed from Quality mode) -->
+                    <div class="field-row capacity-block">
+                        <label class="capacity-toggle">
+                            <input type="checkbox"
+                                   id="quality-mode-toggle">
+                            <span class="capacity-toggle__slider" aria-hidden="true"></span>
+                            <span class="capacity-toggle__label">High-Resolution mode <span class="capacity-toggle__hint">— 4000px resize, 2.5 cm/px GSD</span></span>
+                        </label>
+                        <div id="quality-mode-warning" style="display:none; margin-top:7px; font-family:var(--font-mono); font-size:10px; color:var(--accent-amber); letter-spacing:0.04em;">
+                            ⚠ Roughly 3× longer runtime (~10 min vs 3 min for a 65-photo job).
+                        </div>
+                    </div>
+
+                    <!-- Terrain correction toggle (v0.7.8) ──────────────── -->
+                    <div class="field-row capacity-block">
+                        <label class="capacity-toggle">
+                            <input type="checkbox"
+                                   id="terrain-correction-toggle">
+                            <span class="capacity-toggle__slider" aria-hidden="true"></span>
+                            <span class="capacity-toggle__label">Terrain correction <span class="capacity-toggle__hint">— corrects for elevation and vertical features</span></span>
+                        </label>
+                        <div id="terrain-correction-warning" style="display:none; margin-top:7px; font-family:var(--font-mono); font-size:10px; color:var(--accent-amber); letter-spacing:0.04em;">
+                            ⚠ Full 3D reconstruction. Roughly 12× longer runtime (~35 min vs 3 min for a 65-photo job). Sustained heavy CPU load.
+                        </div>
+                    </div>
+
+                    <!-- Processing threads radio group (v0.7.8) ──────────── -->
+                    <div class="field-row capacity-block">
+                        <div class="thread-radio__heading">
+                            Processing threads <span class="capacity-toggle__hint">— CPU cores used during processing</span>
+                        </div>
+                        <div class="thread-radio-group" role="radiogroup" aria-label="Processing threads">
+                            <label class="thread-radio">
+                                <input type="radio" name="max-concurrency" value="2">
+                                <span class="thread-radio__label">2</span>
+                            </label>
+                            <label class="thread-radio">
+                                <input type="radio" name="max-concurrency" value="4" checked>
+                                <span class="thread-radio__label">4</span>
+                            </label>
+                            <label class="thread-radio">
+                                <input type="radio" name="max-concurrency" value="6">
+                                <span class="thread-radio__label">6</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Retain WebODM task toggle (v0.7.6) ──────────────── -->
+                    <div class="field-row capacity-block">
+                        <label class="capacity-toggle">
+                            <input type="checkbox"
+                                   id="retain-task-toggle">
+                            <span class="capacity-toggle__slider" aria-hidden="true"></span>
+                            <span class="capacity-toggle__label">Save WebODM task <span class="capacity-toggle__hint">— tasks remain accessible in WebODM</span></span>
+                        </label>
                     </div>
 
                     <div class="field-row">
@@ -809,18 +1073,16 @@
 
                 <!-- ── 1. Image Capture ──────────────────────────── -->
                 <div class="guide-section">
-                   <div class="guide-section__head">
-                     <span class="guide-section__num">01</span>
-                     <span class="guide-section__title">Image Capture</span>
-                 </div>
-                 <div class="guide-prose">
-                     <p>The single biggest factor in a fast, clean run is <strong>flying high enough</strong>. Coverage and ground resolution trade off against each other &mdash; doubling altitude roughly quarters the photo count.</p>
-                     <p>For most incident overlays, <strong>60–100 m AGL</strong> is a good working band. Drop to 30–50 m only when fine detail genuinely matters. Fly higher when you can.</p>
-                     <p><strong>Overlap matters more than total image count.</strong> Aim for at least <strong>75% frontal</strong> and <strong>65% side</strong> overlap. More is better. Most mission-planning apps will calculate this for you; trust their planner over a manual count.</p>
-                        <p><strong>Flight pattern:</strong> Fly a lawnmower grid over the target area. For high-detail jobs where roofline and structure accuracy matters, fly the grid twice with the second pass rotated 90°. Maintain consistent altitude and let the mission planner set overlap automatically. Do not mix altitudes within a single job.</p>
-                        <p><strong>GPS lock</strong> must be solid before takeoff. Take a single image while still on the ground to estabish a baseline. 
+                    <div class="guide-section__head">
+                        <span class="guide-section__num">01</span>
+                        <span class="guide-section__title">Image Capture</span>
+                    </div>
+                    <div class="guide-prose">
+                        <p>The single biggest factor in a fast, clean run is <strong>flying high enough</strong> &mdash; coverage and ground resolution trade off, and doubling altitude roughly quarters the photo count. <strong>60&ndash;100 m AGL</strong> is the working band for most overlays. Drop to 30&ndash;50 m only when fine detail truly matters.</p>
+                        <p><strong>Overlap matters more than total image count.</strong> Aim for <strong>75% frontal</strong> and <strong>65% side</strong> overlap. Most mission-planning apps calculate this &mdash; trust their planner over a manual count.</p>
+                        <p>Fly a <strong>lawnmower grid</strong> over the target at consistent altitude. For high-detail jobs, fly the grid twice with the second pass rotated 90&deg;. <strong>GPS lock</strong> must be solid before takeoff &mdash; take a single image on the ground to establish a baseline.</p>
                         <div class="guide-callout">
-                            <strong>Limit:</strong> 100 photos per job. 
+                            <strong>Limit:</strong> 150 photos per job by default. Enable <strong>high-capacity mode</strong> below the photo picker to allow up to 300 photos per job.
                         </div>
                     </div>
                 </div>
@@ -832,10 +1094,16 @@
                     <span class="guide-section__title">Upload &amp; Process</span>
                 </div>
                 <div class="guide-prose">
-                    <p>Enter an <strong>incident name or number</strong> in Section 1 &mdash; this becomes the output filename and how the overlay appears in CloudTAK. Use whatever your team will recognize in the field (e.g. <code>Warehouse Fire</code>, <code>MM-12 South Fork</code>) The name chosen will automatically have the date and time it was generated appended to the end of the file name.</p>
-                    <p>Click the photo picker and select your <strong>GPS-tagged JPEG photos</strong>. The picker rejects non-JPEG files and photos missing GPS EXIF before processing starts.</p>
-                    <p>Click <strong>Process</strong>. The upload bar runs first, then the job moves to <strong>Standby</strong> while the processing node builds the orthophoto. <strong>Typical run time is 3–5 minutes</strong> for a 30–70 photo job.</p>
-                    <p>The page can be left open in the background &mdash; status updates on its own. If something goes wrong, the most common cause is a single photo with no GPS data; remove it and re-run.</p>
+                    <p>Enter the <strong>location of the incident</strong> in Section 1 &mdash; this becomes the output filename and how the overlay appears in your TAK client. Use a description your team will recognize (e.g. <code>Eagle River Rd MP 12</code>). A date-time stamp is appended automatically.</p>
+                    <p>Select your <strong>GPS-tagged JPEG photos</strong>. The picker rejects non-JPEG files and photos missing GPS EXIF before processing starts.</p>
+                    <p>Click <strong>Process</strong>. A 65-photo job at defaults takes <strong>about 3 minutes</strong> end-to-end. The page can be left open or closed &mdash; status updates on its own.</p>
+                    <p><strong>Optional toggles:</strong></p>
+                    <ul class="guide-bullets">
+                        <li><strong>High-Resolution mode</strong> &mdash; pins output to 2.5 cm/px GSD (visibly finer detail). Runtime ~10 min for a 65-photo job.</li>
+                        <li><strong>Terrain correction</strong> &mdash; runs full 3D reconstruction; corrects geometric error from elevation change and tall vertical features (buildings, towers, rubble piles). Runtime ~35 min. Both modes together: ~42 min.</li>
+                        <li><strong>Processing threads</strong> &mdash; 4 by default. Drop to 2 if the host is under other heavy load; raise to 6 only when the host is otherwise idle.</li>
+                        <li><strong>Save WebODM Task</strong> &mdash; retains the source WebODM project for inspection. Cleared at the 72-hour purge along with the job record.</li>
+                    </ul>
                 </div>
             </div>
 
@@ -843,12 +1111,13 @@
             <div class="guide-section">
                 <div class="guide-section__head">
                     <span class="guide-section__num">03</span>
-                    <span class="guide-section__title">Import to CloudTAK</span>
+                    <span class="guide-section__title">Import to TAK</span>
                 </div>
                 <div class="guide-prose">
-                    <p>When a job completes, two download buttons appear in Section 3: <strong>MBTILES</strong> and <strong>GEOTIFF&nbsp;RGB</strong>. Pick whichever your destination needs. <strong>GEOTIFF</strong> works for most apps. In CloudTAK open the <strong>Overlay Tool</strong> > <strong>"+"</strong> > <strong>"Your Files"</strong>. <strong>"Your Files"</strong> is where the custom overlay files would appear. Use the <strong>"Upload Icon"</strong> to add the GEOTIFF</p>
+                    <p>When a job completes, a <strong>GeoTIFF</strong> download button appears in the <strong>Downloads</strong> section above. Verified compatible with <strong>CloudTAK</strong> and <strong>TAKAware</strong>.</p>
+                    <p><strong>CloudTAK:</strong> open <strong>Overlay Tool</strong> &gt; <strong>"+"</strong> &gt; <strong>"Your Files"</strong>, then use the <strong>"Upload Icon"</strong> to add the GeoTIFF.</p>
                     <div class="guide-callout">
-                        <strong>72-hour purge.</strong> Both files are automatically deleted from the server 72 hours after the job completes. Download what you need before then. Overlays made with sUAS not equipped with an RTK sensor may be up to +/- 10 meters in accuracy but are typically half that.
+                        <strong>72-hour purge.</strong> The GeoTIFF is automatically deleted from the server 72 hours after the job completes. Overlays from sUAS without RTK may be up to &plusmn;10 m off ground truth; typically half that.
                     </div>
                 </div>
             </div>
@@ -861,7 +1130,7 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
-// TAK Incident Overlay Generator — UI script (v0.7.2)
+// TAK Incident Overlay Generator — UI script (v0.7.10)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // State machine:
@@ -894,6 +1163,67 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ── Photo selection ────────────────────────────────────────────────────────
 
+// ── High-capacity mode (v0.7.5) ────────────────────────────────────────────
+
+var MAX_PHOTOS_DEFAULT = 150;
+var MAX_PHOTOS_HIGH    = 300;
+
+function getEffectiveLimit() {
+    var on = document.getElementById('high-capacity-toggle').checked;
+    return on ? MAX_PHOTOS_HIGH : MAX_PHOTOS_DEFAULT;
+}
+
+function isHighCapacityActive() {
+    return document.getElementById('high-capacity-toggle').checked;
+}
+
+function onHighCapacityToggled() {
+    var on      = document.getElementById('high-capacity-toggle').checked;
+    var warning = document.getElementById('capacity-warning-line');
+    warning.style.display = on ? '' : 'none';
+    updateDropZone();
+    revalidateSelection();
+}
+
+// ── High-Resolution mode toggle (v0.7.8 — renamed from Quality mode) ─────
+
+document.getElementById('quality-mode-toggle').addEventListener('change', function() {
+    var warning = document.getElementById('quality-mode-warning');
+    warning.style.display = this.checked ? '' : 'none';
+});
+
+// ── Terrain correction toggle (v0.7.8) ────────────────────────────────────
+
+document.getElementById('terrain-correction-toggle').addEventListener('change', function() {
+    var warning = document.getElementById('terrain-correction-warning');
+    warning.style.display = this.checked ? '' : 'none';
+});
+
+// ── Processing threads radio group (v0.7.8) ───────────────────────────────
+
+function getSelectedConcurrency() {
+    var checked = document.querySelector('input[name="max-concurrency"]:checked');
+    return checked ? parseInt(checked.value, 10) : 4;
+}
+
+
+// If a selection larger than the new limit exists when toggles change,
+// clear it and warn — better than silently letting the user think it's fine.
+function revalidateSelection() {
+    var input = document.getElementById('photo-input');
+    var n = (input.files || []).length;
+    var limit = getEffectiveLimit();
+    if (n > limit) {
+        input.value = '';
+        updateDropZone();
+        updateProcessButton();
+        showFlash('flash-upload',
+            'Selection cleared — ' + n + ' photos exceeds the current limit of ' + limit + '.');
+    }
+}
+
+// ── File selection ─────────────────────────────────────────────────────────
+
 function onFilesSelected(input) {
     hideFlash('flash-upload');
     var files = Array.prototype.slice.call(input.files || []);
@@ -912,9 +1242,13 @@ function onFilesSelected(input) {
         return;
     }
 
-    if (files.length > 100) {
-        showFlash('flash-upload',
-            'Maximum 100 photos per job. You selected ' + files.length + '.');
+    var limit = getEffectiveLimit();
+    if (files.length > limit) {
+        var msg = 'Maximum ' + limit + ' photos per job. You selected ' + files.length + '.';
+        if (limit === MAX_PHOTOS_DEFAULT) {
+            msg += ' Enable high-capacity mode to allow up to ' + MAX_PHOTOS_HIGH + '.';
+        }
+        showFlash('flash-upload', msg);
         input.value = '';
         updateDropZone();
         updateProcessButton();
@@ -932,6 +1266,8 @@ function updateDropZone() {
     var primary   = document.getElementById('drop-zone-primary');
     var secondary = document.getElementById('drop-zone-secondary');
     var n         = (input.files || []).length;
+    var limit     = getEffectiveLimit();
+    var idleHint  = 'JPEG only · GPS-tagged · max ' + limit + ' photos';
 
     if (n > 0) {
         zone.classList.add('drop-zone--has-files');
@@ -942,7 +1278,7 @@ function updateDropZone() {
         zone.classList.remove('drop-zone--has-files');
         icon.className = 'fa fa-camera drop-zone__icon';
         primary.textContent = 'Click to select photos';
-        secondary.textContent = 'JPEG only · GPS-tagged · max 100 photos';
+        secondary.textContent = idleHint;
     }
 }
 
@@ -961,12 +1297,17 @@ function onProcessClick() {
     var name  = document.getElementById('incident-name').value.trim();
     var files = document.getElementById('photo-input').files || [];
 
-    if (!name) { showFlash('flash-upload', 'Please enter an incident name or number.'); return; }
+    if (!name) { showFlash('flash-upload', 'Please enter a location of incident.'); return; }
     if (!files.length) { showFlash('flash-upload', 'Please select at least one photo.'); return; }
 
     var fd = new FormData();
     fd.append('incident_name', name);
     fd.append('tz_offset', new Date().getTimezoneOffset());
+    fd.append('high_capacity', isHighCapacityActive() ? 'true' : 'false');
+    fd.append('retain_task', document.getElementById('retain-task-toggle').checked ? 'true' : 'false');
+    fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
+    fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
+    fd.append('max_concurrency', getSelectedConcurrency());
     for (var i = 0; i < files.length; i++) fd.append('images[]', files[i]);
 
     setFormLocked(true);
@@ -1158,39 +1499,50 @@ function renderArchive(jobs) {
             '<span class="archive-meta">' + formatDate(job.completed_at) + '</span>';
         tr.appendChild(tdDate);
 
-        // File sizes
+        // File size — GeoTIFF only as of v0.7.8
         var hasGeotiff = !!(job.geotiff_filename && job.geotiff_size_bytes);
-        var sizesHtml =
-            '<div class="archive-meta">MBT&nbsp;' + formatSize(job.file_size_bytes) + '</div>';
-        if (hasGeotiff) {
-            sizesHtml +=
-                '<div class="archive-meta">TIF&nbsp;' + formatSize(job.geotiff_size_bytes) + '</div>';
-        }
+        var sizesHtml = hasGeotiff
+            ? '<div class="archive-meta">TIF&nbsp;' + formatSize(job.geotiff_size_bytes) + '</div>'
+            : '<div class="archive-meta">—</div>';
         var tdSize = document.createElement('td');
         tdSize.innerHTML = sizesHtml;
         tr.appendChild(tdSize);
 
-        // Actions — two download buttons + delete
+        // Actions — GeoTIFF download + delete
         var tdActions = document.createElement('td');
         var actionsHtml = '<div class="archive-actions">';
 
-        actionsHtml +=
-            '<a href="/plugins/tak_incident_overlay/download/' + esc(job.job_id) + '/" ' +
-               'class="btn btn--download btn--sm" download>' +
-               '<i class="fa fa-download"></i><span>MBTILES</span></a>';
+        // ── Row 1: download button ───────────────────────────────
+        actionsHtml += '<div class="archive-actions__row">';
 
         if (hasGeotiff) {
             actionsHtml +=
                 '<a href="/plugins/tak_incident_overlay/download-geotiff/' + esc(job.job_id) + '/" ' +
-                   'class="btn btn--download-alt btn--sm" download>' +
-                   '<i class="fa fa-download"></i><span>GeoTIFF&nbsp;RGB</span></a>';
+                   'class="btn btn--download btn--sm" download>' +
+                   '<i class="fa fa-download"></i><span>GeoTIFF</span></a>';
+        }
+
+        actionsHtml += '</div>';
+
+        // ── Row 2: WebODM link (if retained) + delete ───────────
+        actionsHtml += '<div class="archive-actions__row">';
+
+        if (job.retain_task && job.webodm_project_id) {
+            actionsHtml +=
+                '<a href="/dashboard/?project_task_open=' + esc(String(job.webodm_project_id)) + '" ' +
+                   'class="btn btn--sm" ' +
+                   'style="color:var(--accent-blue);border-color:rgba(77,159,255,0.35);" ' +
+                   'target="_blank" title="Open in WebODM">' +
+                   '<i class="fa fa-external-link"></i><span>WebODM</span></a>';
         }
 
         actionsHtml +=
             '<button class="btn btn--danger btn--sm" ' +
                'onclick="onDeleteClick(\'' + esc(job.job_id) + '\')" ' +
                'title="Delete">' +
-               '<i class="fa fa-trash-o"></i></button>';
+               '<i class="fa fa-trash-o"></i><span>DELETE</span></button>';
+
+        actionsHtml += '</div>';
 
         actionsHtml += '</div>';
         tdActions.innerHTML = actionsHtml;
@@ -1286,7 +1638,7 @@ function showFlash(id, msg) {
     el.innerHTML =
         '<button class="flash__close" onclick="hideFlash(\'' + id + '\')" aria-label="Dismiss">&times;</button>' +
         esc(msg);
-    el.style.display = '';
+    el.style.display = 'block';
 }
 
 function hideFlash(id) {
