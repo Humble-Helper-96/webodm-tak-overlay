@@ -1,5 +1,5 @@
 # TAK Incident Overlay
-**v0.7.10 | WebODM Coreplugin**
+**v0.7.13 | WebODM Coreplugin**
 
 > ⚠️ **This is a plugin for [WebODM](https://github.com/OpenDroneMap/WebODM),
 > not a standalone application.** WebODM must be installed and running before
@@ -29,7 +29,6 @@ everything else.
 - **High-Resolution mode** — pins orthophoto to 2.5 cm/px GSD with native-resolution input; ~10 min for 65 photos
 - **Terrain correction mode** — runs full Structure-from-Motion pipeline for geometric accuracy over varied terrain; ~35 min for 65 photos (~42 min combined with High-Resolution)
 - Up to three concurrent jobs — the processing node queues automatically
-- **Operator-selectable CPU thread count** — 2, 4, or 6 threads, default 4
 - Single deliverable per job: **GeoTIFF** (3-band RGB, JPEG-compressed at quality 85, internal alpha mask, WGS84/EPSG:4326)
 - Output files are small (~6–10 MB for a 65-photo job regardless of mode) due to JPEG compression
 - Local timezone stamping on output filenames
@@ -39,7 +38,6 @@ everything else.
 - **High-capacity mode** — raises photo limit from 150 to 300 per job
 - **High-Resolution mode** — 4000 px image resize + 2.5 cm/px orthophoto resolution; visibly finer ground detail at ~2× standard runtime
 - **Terrain correction** — disables fast-orthophoto so ODM runs the full SfM pipeline (dense MVS + textured mesh + orthorectification); corrects geometric error from terrain variation and tall vertical features
-- **Processing threads** — select 2, 4 (default), or 6 CPU threads
 - **Save WebODM task** — retains the WebODM project after pipeline completes for inspection; direct link appears in the archive row; purged at 72 hours with the job record
 
 **User Experience**

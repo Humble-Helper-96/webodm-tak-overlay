@@ -7,6 +7,101 @@ loose.
 
 ---
 
+## [0.7.13] — 2026-07-19
+
+### Fixed
+- **`__init__.py` was empty**, so WebODM's plugin loader could never find the
+  `Plugin` class on the package (`module 'coreplugins.tak_incident_overlay'
+  has no attribute 'Plugin'`). This predates the 0.7.x line's tracked
+  history — the plugin had likely never registered successfully on this
+  deployment. Fixed to `from .plugin import Plugin`.
+
+### Changed
+- **`max-concurrency` is now computed dynamically instead of hardcoded.**
+  The previous fixed value of 3 was calibrated for a specific host's
+  cpuset pinning (cores 3,4,5) and silently under- or over-committed on
+  any other machine. The pipeline now probes the primary ProcessingNode's
+  `/info` endpoint for its reported `cpuCores` (same lookup pattern
+  `api.node_status_view` already used for the header's online/offline
+  indicator) and requests 50% of that (`CONCURRENCY_PERCENT`), rounded,
+  minimum 1. Falls back to the old fixed value of 3 if the node is
+  unreachable or doesn't report `cpuCores` (older NodeODM versions may
+  omit the field) — never blocks a job on this lookup failing.
+
+---
+
+## [0.7.12] — 2026-07-19
+
+### Added
+- **Submitting operator granted visibility on saved WebODM projects.**
+  The pipeline creates each WebODM project owned by the first superuser
+  account, which made saved tasks (Save WebODM Task toggle) invisible to
+  the operator who submitted the job — the archive row's WebODM deep link
+  silently fell back to the bare dashboard. The submitting user's name is
+  now threaded from `upload_view` through the Celery boundary (as a plain
+  string), and after project creation the pipeline grants that user
+  object-level `view_project` via django-guardian. Non-fatal by design: a
+  failed grant logs a warning and never kills the job. Applies to jobs
+  created from this version onward.
+- **Live processing progress bar.** `status_view` has returned
+  `webodm_progress` and `webodm_stage` since v0.7.2; the UI never rendered
+  them. The standby panel now shows a green progress bar with the ODM
+  stage label ("Feature extraction", "Densification", ...) during
+  processing, falling back to the pipeline phase label during GDAL steps.
+- **Running-job restore on page reload.** Reloading the page mid-job
+  previously lost the active job — UI showed "Idle" while the job kept
+  running server-side, with no progress display and no cancel path. The
+  UI now checks for a running job at page load and resumes the locked
+  form, status panel, and polling. Deliberately runs once at load (not in
+  the 60 s archive refresh) so a job submitted from another machine can't
+  hijack an idle operator's form mid-session.
+- **Failed and cancelled jobs shown in the archive.** Previously only
+  completed jobs rendered, so a job that failed while the operator was
+  away left no visible trace. Failed rows are dimmed with a red Failed
+  chip (error text in the tooltip) and a delete button; cancelled rows
+  get a neutral chip. No download/WebODM actions on non-completed rows.
+- **Pipeline watchdog.** Hard 3-hour ceiling on total pipeline runtime.
+  A task that never reaches a terminal state (node death missed by
+  WebODM's heartbeat, DB hiccup) previously pinned a Celery worker
+  forever and silently consumed one of the three job slots; it now fails
+  with an operator-readable timeout message.
+
+### Fixed
+- **Cancelled jobs no longer reported as failed.** The poll loop treated
+  `TASK_CANCELLED` identically to `TASK_FAILED`, raising into the generic
+  failure handler which stomped the archive's `cancelled` status with
+  `failed` ("WebODM task ended with status 50"). Cancellation now exits
+  the pipeline cleanly. Bonus: a task cancelled directly in WebODM (not
+  via the plugin UI) now marks the plugin job record cancelled instead of
+  leaving it "running" forever.
+- **Output filename collisions.** `display_name` is minute-precise, so
+  two jobs with the same incident name in the same minute (a quick retry)
+  shared a `geotiff_filename` — the second job's output overwrote the
+  first's, and deleting either job removed the shared file from under the
+  surviving record. Filenames now carry a `_<job_id[:8]>` suffix; the
+  operator-facing display name is unchanged.
+- **Duplicate photo names within a job.** Photos were saved under their
+  original names, so merging two SD cards with overlapping names
+  (DJI_0001.JPG twice) silently overwrote — the job processed fewer
+  images than selected, with no error. Saved images are now prefixed
+  with a 4-digit upload index.
+- **Partial output cleanup.** If the GDAL export died mid-write, a
+  truncated .tif remained in the archive directory under the final
+  filename until purge. Failure handlers now remove it.
+
+### Changed
+- **Processing threads selection removed.** The 2/4/6 radio group is
+  gone from the UI and API; `max-concurrency` is fixed at 3, matching
+  the NodeODX cpuset (cores 3,4,5).
+- **CSRF protection enabled on POST endpoints.** `@csrf_exempt` removed
+  from upload, cancel, and delete. The frontend has sent `X-CSRFToken`
+  on all three since they were written, so the decorator was disabling a
+  protection that was already paid for.
+- **Version strings unified.** manifest.json, plugin.py (header render +
+  ping endpoint), and all module headers now agree on 0.7.12.
+
+---
+
 ## [0.7.10] — 2026-06-03
 
 ### Changed

@@ -1,5 +1,5 @@
 # TAK Incident Overlay — Deployment Guide
-**Plugin version:** v0.7.10
+**Plugin version:** v0.7.13
 **WebODM target:** 3.2.2 (Docker install)
 **Last updated:** 2026-06-03
 
@@ -62,10 +62,10 @@ If git is not available, download and extract the release archive instead:
 ```bash
 cd $WEBODM/coreplugins
 
-wget https://github.com/Humble-Helper-96/webodm-tak-overlay/archive/refs/tags/v0.7.10.tar.gz
-tar -xzf v0.7.10.tar.gz
-mv webodm-tak-overlay-0.7.10 tak_incident_overlay
-rm v0.7.10.tar.gz
+wget https://github.com/Humble-Helper-96/webodm-tak-overlay/archive/refs/tags/v0.7.13.tar.gz
+tar -xzf v0.7.13.tar.gz
+mv webodm-tak-overlay-0.7.13 tak_incident_overlay
+rm v0.7.13.tar.gz
 ```
 
 ### Confirm the files are there
@@ -173,7 +173,7 @@ docker logs webapp 2>&1 | grep -i "tak_incident"
 A successful load looks like one of:
 
 ```
-Found plugin: tak_incident_overlay (v0.7.10)
+Found plugin: tak_incident_overlay (v0.7.13)
 INFO Registered [coreplugins.tak_incident_overlay.plugin]
 ```
 
@@ -188,7 +188,7 @@ between photos).
 
 1. Enter a location name in the **Location of Incident** field
 2. Select your test images
-3. Leave all toggles at their defaults (4 threads, High-Resolution off, Terrain correction off)
+3. Leave all toggles at their defaults (High-Resolution off, Terrain correction off)
 4. Click **Process**
 
 The status bar should move through these phases in order:
@@ -217,7 +217,7 @@ If you installed via git:
 ```bash
 cd $WEBODM/coreplugins/tak_incident_overlay
 git fetch origin
-git checkout v0.7.10
+git checkout v0.7.13
 ```
 
 If you installed via archive: delete the folder and re-run Step 2.
@@ -250,7 +250,7 @@ the new plugin no longer produces MBTiles.
    ```bash
    rm $WEBODM/app_data/media/tak_incident_overlay/index.json
    ```
-4. Install v0.7.10 plugin files (Step 2)
+4. Install v0.7.13 plugin files (Step 2)
 5. Restart webapp and worker (Step 4)
 
 The plugin creates a fresh index automatically on first use.

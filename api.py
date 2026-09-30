@@ -1,5 +1,5 @@
 """
-api.py — TAK Incident Overlay (v0.7.10)
+api.py — TAK Incident Overlay (v0.7.13)
 All HTTP view functions. Registered as MountPoints in plugin.py.
 
 Endpoints:
@@ -20,7 +20,6 @@ from PIL import Image as PilImage
 
 from django.http import JsonResponse, FileResponse, Http404
 from django.contrib.auth.decorators import login_required
-from django.views.decorators.csrf import csrf_exempt
 
 from . import archive
 
@@ -117,7 +116,6 @@ def _validate_image_bytes(name, data):
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
 
-@csrf_exempt
 @login_required
 def upload_view(request):
     """
@@ -176,19 +174,6 @@ def upload_view(request):
     # reference hardware.
     terrain_correction = request.POST.get('terrain_correction', 'false').lower() == 'true'
 
-    # ── Parse max_concurrency (v0.7.8) ─────────────────────────
-    # Operator-selectable CPU thread count for ODM processing. Allowed values
-    # are 2, 4, 6 (v0.7.10 — 8 dropped for hardware safety on smaller nodes).
-    # Anything else (missing, malformed, out of range) falls back to the
-    # default of 4. Backend re-validates regardless of frontend state.
-    ALLOWED_CONCURRENCY = {2, 4, 6}
-    try:
-        max_concurrency = int(request.POST.get('max_concurrency', '4'))
-    except (TypeError, ValueError):
-        max_concurrency = 4
-    if max_concurrency not in ALLOWED_CONCURRENCY:
-        max_concurrency = 4
-
     # ── Validate photo list ────────────────────────────────────
     images = request.FILES.getlist('images[]')
     if not images:
@@ -225,8 +210,7 @@ def upload_view(request):
     try:
         job_id = archive.create_job(incident_name, tz_offset_minutes=tz_offset_minutes,
                                     retain_task=retain_task, quality_mode=quality_mode,
-                                    terrain_correction=terrain_correction,
-                                    max_concurrency=max_concurrency)
+                                    terrain_correction=terrain_correction)
         images_dir = archive.get_images_dir(job_id)
     except Exception as e:
         log.exception('TAK Overlay: failed to create job record: %s', e)
@@ -259,7 +243,12 @@ def upload_view(request):
                 archive.delete_job(job_id)
                 return _err(err_msg)
 
-            dest = os.path.join(images_dir, img.name)
+            # Prefix with the loop index (v0.7.13): merging photos from two
+            # SD cards routinely produces duplicate names (DJI_0001.JPG twice),
+            # and os.path.join with the raw name silently overwrites — the job
+            # then processes fewer images than the operator selected, with no
+            # error. ODM doesn't care about filenames; GPS EXIF is what matters.
+            dest = os.path.join(images_dir, '{:04d}_{}'.format(idx, img.name))
             with open(dest, 'wb') as f:
                 f.write(data)
             saved_paths.append(dest)
@@ -279,7 +268,7 @@ def upload_view(request):
         pipeline.start(job_id, saved_paths, retain_task=retain_task,
                        quality_mode=quality_mode,
                        terrain_correction=terrain_correction,
-                       max_concurrency=max_concurrency)
+                       submitting_username=request.user.username)
         log.info(
             'TAK Overlay: pipeline started for job %s',
             job_id,
@@ -386,7 +375,6 @@ def _stage_label(status_code, progress):
 
 # ── Cancel ─────────────────────────────────────────────────────────────────────
 
-@csrf_exempt
 @login_required
 def cancel_view(request, job_id):
     """
@@ -539,7 +527,6 @@ def node_status_view(request):
 
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
-@csrf_exempt
 @login_required
 def delete_view(request, job_id):
     """

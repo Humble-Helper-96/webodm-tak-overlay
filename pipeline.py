@@ -1,5 +1,5 @@
 """
-pipeline.py — TAK Incident Overlay plugin (v0.7.10)
+pipeline.py — TAK Incident Overlay plugin (v0.7.13)
 Async WebODM task creation, polling, and GDAL export pipeline.
 
 Entry point:  start(job_id, saved_paths)
@@ -159,7 +159,7 @@ logger = logging.getLogger('app.plugins.tak_incident_overlay')
 # ---------------------------------------------------------------------------
 
 def start(job_id, saved_paths, retain_task=False, quality_mode=False,
-          terrain_correction=False, max_concurrency=4):
+          terrain_correction=False, submitting_username=None):
     """
     Kick off the async pipeline.  Returns immediately — all real work happens
     in _run_pipeline() via Celery in the worker container.
@@ -184,14 +184,21 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
                                     orthorectification). Corrects geometric
                                     error from varied terrain and tall vertical
                                     features. Reference hardware (M920q
-                                    i5-8500), 65-photo job at 4 threads:
+                                    i5-8500), 65-photo job at 3 threads:
                                     ~35 min vs ~3 min default; ~42 min when
                                     combined with quality_mode.
                                     UI label: "Terrain correction".
-        max_concurrency    (int): Number of CPU threads ODM uses during processing.
-                                    Must be one of {2, 4, 6}. Defaults to 4.
-                                    Caller (api.py) validates the value; pipeline
-                                    trusts what it receives.
+        submitting_username (str|None): WebODM username of the operator who
+                                    submitted the job (request.user.username
+                                    from api.upload_view). Passed as a plain
+                                    string — NOT a User object — because
+                                    run_function_async serializes arguments
+                                    across the Celery boundary. Used in
+                                    _run_pipeline to grant that operator
+                                    object-level view permission on the
+                                    WebODM project via django-guardian, so
+                                    saved tasks are visible in the dashboard
+                                    without logging in as the superuser owner.
     """
     from app.plugins.worker import run_function_async
     logger.info(
@@ -199,10 +206,10 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
         f"{' (retain_task=True)' if retain_task else ''}"
         f"{' (quality_mode=True)' if quality_mode else ''}"
         f"{' (terrain_correction=True)' if terrain_correction else ''}"
-        f" (max_concurrency={max_concurrency})"
+        f" (max_concurrency=3 — fixed, cpuset-pinned)"
     )
     run_function_async(_run_pipeline, job_id, saved_paths, retain_task,
-                       quality_mode, terrain_correction, max_concurrency)
+                       quality_mode, terrain_correction, submitting_username)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +219,7 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
 # ---------------------------------------------------------------------------
 
 def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
-                  terrain_correction=False, max_concurrency=4,
+                  terrain_correction=False, submitting_username=None,
                   progress_callback=None):
     """
     Full pipeline — runs asynchronously inside the Celery worker container.
@@ -272,45 +279,88 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     # How often (seconds) to poll WebODM for task status while processing
     POLL_INTERVAL = 15
 
+    # Watchdog: hard ceiling on total pipeline runtime. Worst legitimate
+    # case is terrain_correction + quality_mode at ~42 min on reference
+    # hardware; 3 hours leaves generous headroom for slower CPUs and big
+    # photo sets. Without this, a task that never reaches a terminal state
+    # (node dies in a way WebODM's heartbeat misses, DB hiccup) pins a
+    # Celery worker forever and silently eats one of the 3 job slots.
+    MAX_RUNTIME_SECONDS = 3 * 60 * 60
+
+    # Percentage of the processing node's CPU cores to hand ODM via
+    # max-concurrency (v0.7.13). Previously a fixed value of 3, which was
+    # calibrated for a specific host's cpuset pinning (cores 3,4,5) and
+    # silently under- or over-committed on any other machine. 50% leaves
+    # headroom for WebODM's own webapp/worker/db containers and up to
+    # 3 concurrent jobs (this plugin's fixed job-slot limit) without
+    # oversubscribing the box; adjust here if that assumption changes.
+    CONCURRENCY_PERCENT = 50
+
+    def _get_node_cpu_cores():
+        """
+        Query the primary WebODM ProcessingNode's /info endpoint for its
+        reported cpuCores. Mirrors the same node-lookup and probe pattern
+        api.node_status_view already uses for the header's online/offline
+        indicator — first ProcessingNode record, direct HTTP probe, no
+        hardcoded hostname.
+
+        Returns int cpuCores, or None if no node is configured, the probe
+        fails, or the field is missing/malformed. Callers must have a
+        fallback for None — this must never raise into the pipeline.
+        """
+        try:
+            import requests as _requests
+            from nodeodm.models import ProcessingNode
+
+            node = ProcessingNode.objects.order_by('id').first()
+            if node is None:
+                return None
+
+            url = 'http://{}:{}/info'.format(node.hostname, node.port)
+            resp = _requests.get(url, timeout=5)
+            if resp.status_code != 200:
+                return None
+
+            cores = resp.json().get('cpuCores')
+            return int(cores) if cores else None
+        except Exception as exc:
+            logger.warning(f"[TAK] {job_id}: Could not read node cpuCores — {exc}")
+            return None
+
+    _node_cores = _get_node_cpu_cores()
+    if _node_cores:
+        MAX_CONCURRENCY = max(1, round(_node_cores * CONCURRENCY_PERCENT / 100))
+        logger.info(
+            f"[TAK] {job_id}: Node reports {_node_cores} cores — "
+            f"using {CONCURRENCY_PERCENT}% = {MAX_CONCURRENCY} threads"
+        )
+    else:
+        # Fallback if the node is unreachable or doesn't report cpuCores
+        # (older NodeODM versions may omit the field). Matches the old
+        # fixed default so behavior degrades to the previous known-safe
+        # value rather than guessing.
+        MAX_CONCURRENCY = 3
+        logger.warning(
+            f"[TAK] {job_id}: Node cpuCores unavailable — "
+            f"falling back to max-concurrency={MAX_CONCURRENCY}"
+        )
+
     # =====================================================================
     # TASK_OPTIONS — minimal proven set
     #
     # Always-on:
     #   auto-boundary:true            — crop output to actual flight area
-    #   max-concurrency:<operator>    — operator-selected CPU thread count
-    #                                    (default 4, allowed {2, 4, 6});
-    #                                    api.py validates before we see it
+    #   max-concurrency:MAX_CONCURRENCY — computed above as
+    #                                    CONCURRENCY_PERCENT of the node's
+    #                                    reported cpuCores (v0.7.13).
+    #                                    Operator selection removed in v0.7.13.
     #
     # Conditional:
     #   fast-orthophoto:true          — added UNLESS terrain_correction is on.
-    #                                    Skip it and ODM runs the full SfM
-    #                                    pipeline (dense MVS + mesh + textured
-    #                                    orthorectification), which corrects
-    #                                    geometric error from varied terrain
-    #                                    and tall vertical features.
-    #
-    # Measured timing — 65-photo job, 4 threads, identical dataset
-    # (Sutwick area, June 2026), reference hardware: Lenovo M920q with
-    # Intel i5-8500 (6 cores). Sizes are v0.7.9 (JPEG q=85 output).
-    #
-    # NOTE: timings are full plugin pipeline (queue → archive write),
-    # INCLUDING the gdalwarp reproject and gdal_translate GeoTIFF export
-    # steps that run after ODM completes. They are NOT directly comparable
-    # to the "Processing Time" shown in the WebODM task UI, which only
-    # tracks the ODM photogrammetry step itself.
-    #
-    #     defaults                  ~3 min    GSD 5.1 cm    6.1 MB output
-    #     + quality_mode           ~10 min    GSD 2.6 cm    9.0 MB output
-    #     + terrain_correction     ~35 min    GSD 5.1 cm    7.2 MB output
-    #     both enabled             ~42 min    GSD 2.6 cm    9.4 MB output
-    #
-    # quality_mode (v0.7.8 — repurposed): adds an explicit
-    #   orthophoto-resolution: 2.5 cm/px and raises RESIZE_TO to 4000 (below).
-    #   Use when finer ground detail is required and longer runtime is acceptable.
     # =====================================================================
     TASK_OPTIONS = [
         {'name': 'auto-boundary',   'value': True},
-        {'name': 'max-concurrency', 'value': max_concurrency},
+        {'name': 'max-concurrency', 'value': MAX_CONCURRENCY},
     ]
     if not terrain_correction:
         TASK_OPTIONS.append({'name': 'fast-orthophoto', 'value': True})
@@ -437,6 +487,13 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     display_name = job['display_name']
     project = None  # kept in scope so finally block can always attempt cleanup
 
+    # Final output path — resolved up front (v0.7.13) so the except blocks
+    # can remove a partially-written GeoTIFF if the GDAL pipeline dies
+    # mid-export. A truncated .tif left under the final filename won't be
+    # served (job status != completed) but wastes disk until purge and
+    # confuses anyone browsing the archive directory.
+    geotiff_path = archive.get_geotiff_path(job)
+
     logger.info(
         f"[TAK] {job_id}: Pipeline starting — options={TASK_OPTIONS}, resize_to={RESIZE_TO}"
     )
@@ -455,6 +512,47 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         )
         archive.update_job(job_id, webodm_project_id=project.id)
         logger.info(f"[TAK] {job_id}: Created WebODM project {project.id} — '{project.name}'")
+
+        # ------------------------------------------------------------------
+        # Grant the submitting operator visibility into this project.
+        #
+        # The project owner is the first superuser (above), NOT the operator
+        # who submitted the job. Without an explicit object-level grant, the
+        # operator cannot see the project/task in the WebODM dashboard even
+        # with "Save WebODM task" enabled — the ?project_task_open= deep link
+        # silently falls back to the bare dashboard.
+        #
+        # WebODM uses django-guardian for object permissions (the same
+        # mechanism behind Administration → Object Permissions). Task
+        # visibility is checked through the parent project's permissions,
+        # so granting view_project is sufficient to see the task too.
+        #
+        # Non-fatal by design: a failed grant must never kill the job.
+        # Skip if the submitter IS the superuser owner (already sees it).
+        # ------------------------------------------------------------------
+        if submitting_username and submitting_username != user.username:
+            try:
+                from guardian.shortcuts import assign_perm
+                submitter = User.objects.filter(
+                    username=submitting_username
+                ).first()
+                if submitter is not None:
+                    assign_perm('view_project', submitter, project)
+                    logger.info(
+                        f"[TAK] {job_id}: Granted '{submitting_username}' "
+                        f"view_project on project {project.id}"
+                    )
+                else:
+                    logger.warning(
+                        f"[TAK] {job_id}: Submitting user "
+                        f"'{submitting_username}' not found in WebODM — "
+                        f"no permission grant applied"
+                    )
+            except Exception:
+                logger.exception(
+                    f"[TAK] {job_id}: Permission grant for "
+                    f"'{submitting_username}' failed — continuing anyway"
+                )
 
         # ------------------------------------------------------------------
         # Step 2 — Pre-stage images at TASK ROOT.
@@ -532,9 +630,19 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         )
 
         _phase_processing_set = False   # guard: only set Processing phase once
+        _poll_started_at = time.time()  # watchdog baseline
 
         while True:
             time.sleep(POLL_INTERVAL)
+
+            # Watchdog — bail out if the job has been running impossibly long
+            if time.time() - _poll_started_at > MAX_RUNTIME_SECONDS:
+                raise RuntimeError(
+                    f"Job exceeded the maximum runtime of "
+                    f"{MAX_RUNTIME_SECONDS // 3600} hours and was abandoned. "
+                    f"Check the processing node's health and try again."
+                )
+
             task.refresh_from_db()
 
             status   = task.status
@@ -558,7 +666,34 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
                 logger.info(f"[TAK] {job_id}: WebODM task completed — Phase → Finalizing")
                 break
 
-            # FAILED or CANCELLED
+            if status == TASK_CANCELLED:
+                # Cancellation is not a failure. Two paths lead here:
+                #   1. Operator hit Cancel in the plugin UI — cancel_view
+                #      has already marked the archive record 'cancelled'.
+                #      Do NOT raise: the generic except block would call
+                #      mark_failed() and stomp the cancelled status (the
+                #      operator would see their own cancel reported as a
+                #      job failure).
+                #   2. Someone cancelled the task directly in WebODM —
+                #      archive still says 'running', so mark it cancelled
+                #      here to keep the plugin UI consistent.
+                # Either way: exit cleanly. The finally block still runs
+                # (project cleanup + working dir removal).
+                current = archive.get_job(job_id)
+                if current and current.get('status') == 'running':
+                    archive.mark_cancelled(job_id)
+                    logger.info(
+                        f"[TAK] {job_id}: Task cancelled from WebODM side — "
+                        f"archive record updated"
+                    )
+                else:
+                    logger.info(
+                        f"[TAK] {job_id}: Task cancelled (operator-initiated) — "
+                        f"pipeline exiting cleanly"
+                    )
+                return
+
+            # FAILED
             last_error = getattr(task, 'last_error', None) or ''
             raise RuntimeError(
                 f"WebODM task ended with status {status}. "
@@ -592,7 +727,7 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         # ------------------------------------------------------------------
         working_dir  = archive.get_working_dir(job_id)
         wgs84_tif    = os.path.join(working_dir, 'wgs84.tif')
-        geotiff_path = archive.get_geotiff_path(job)
+        # geotiff_path was resolved at the top of the pipeline (v0.7.13)
 
         archive.update_job(job_id, phase='Reprojecting')
         logger.info(f"[TAK] {job_id}: Phase → Reprojecting")
@@ -625,10 +760,24 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
             msg += f": {stderr[:500]}"   # cap at 500 chars to avoid log spam
         logger.error(f"[TAK] {job_id}: {msg}", exc_info=True)
         archive.mark_failed(job_id, msg)
+        # Remove any partially-written output (v0.7.13)
+        try:
+            if geotiff_path and os.path.exists(geotiff_path):
+                os.remove(geotiff_path)
+                logger.info(f"[TAK] {job_id}: Removed partial GeoTIFF after failure")
+        except OSError:
+            pass
 
     except Exception as exc:
         logger.error(f"[TAK] {job_id}: Pipeline failed — {exc}", exc_info=True)
         archive.mark_failed(job_id, str(exc))
+        # Remove any partially-written output (v0.7.13)
+        try:
+            if geotiff_path and os.path.exists(geotiff_path):
+                os.remove(geotiff_path)
+                logger.info(f"[TAK] {job_id}: Removed partial GeoTIFF after failure")
+        except OSError:
+            pass
 
     finally:
         # Conditionally delete WebODM project — skip if operator requested retention.

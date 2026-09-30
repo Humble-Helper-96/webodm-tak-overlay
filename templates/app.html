@@ -462,6 +462,42 @@
             transition: width 0.18s;
         }
 
+        /* ODM progress variant (v0.7.13) — green, matches the standby panel */
+        .progress-wrap--odm {
+            margin-top: 14px;
+            background: transparent;
+            border: none;
+            padding: 0;
+            text-align: left;
+        }
+        .progress-label--odm { color: var(--accent-green); }
+        .progress-track--odm { background: rgba(0,214,143,0.18); }
+        .progress-fill--odm  { background: var(--accent-green); transition: width 0.6s; }
+
+        /* Failed / cancelled archive rows (v0.7.13) */
+        .archive-row--dimmed td { opacity: 0.55; }
+        .archive-status {
+            display: inline-block;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            padding: 1px 7px;
+            border-radius: 3px;
+            margin-left: 8px;
+            vertical-align: middle;
+            cursor: default;
+        }
+        .archive-status--failed {
+            color: var(--accent-red);
+            border: 1px solid var(--accent-red-dim);
+        }
+        .archive-status--cancelled {
+            color: var(--text-secondary);
+            border: 1px solid var(--border-strong, #3a4a5c);
+        }
+
         /* Flash messages */
         .flash {
             padding: 10px 14px;
@@ -676,65 +712,6 @@
             padding-bottom: 4px;
         }
 
-        /* ── Processing threads radio group (v0.7.8) ───────────────── */
-        .thread-radio__heading {
-            font-family: var(--font-mono);
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--text-primary);
-            margin-bottom: 10px;
-        }
-        .thread-radio__heading .capacity-toggle__hint {
-            font-weight: 400;
-            color: var(--text-muted);
-            text-transform: none;
-            letter-spacing: 0;
-        }
-        .thread-radio-group {
-            display: inline-flex;
-            gap: 6px;
-        }
-        .thread-radio {
-            cursor: pointer;
-            user-select: none;
-        }
-        .thread-radio input[type="radio"] {
-            position: absolute;
-            opacity: 0;
-            width: 0;
-            height: 0;
-            pointer-events: none;
-        }
-        .thread-radio__label {
-            display: inline-block;
-            min-width: 38px;
-            text-align: center;
-            padding: 6px 12px;
-            background: var(--bg-input);
-            border: 1px solid var(--border-input);
-            border-radius: 3px;
-            font-family: var(--font-mono);
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.08em;
-            color: var(--text-muted);
-            transition: border-color 0.12s, color 0.12s, background 0.12s;
-        }
-        .thread-radio:hover .thread-radio__label {
-            border-color: var(--accent-green-dim);
-            color: var(--text-primary);
-        }
-        .thread-radio input[type="radio"]:checked + .thread-radio__label {
-            background: var(--bg-success-soft);
-            border-color: var(--accent-green);
-            color: var(--accent-green);
-        }
-        .thread-radio input[type="radio"]:focus-visible + .thread-radio__label {
-            box-shadow: var(--shadow-focus);
-        }
-
         .guide-header {
             display: flex;
             align-items: center;
@@ -942,27 +919,6 @@
                         </div>
                     </div>
 
-                    <!-- Processing threads radio group (v0.7.8) ──────────── -->
-                    <div class="field-row capacity-block">
-                        <div class="thread-radio__heading">
-                            Processing threads <span class="capacity-toggle__hint">— CPU cores used during processing</span>
-                        </div>
-                        <div class="thread-radio-group" role="radiogroup" aria-label="Processing threads">
-                            <label class="thread-radio">
-                                <input type="radio" name="max-concurrency" value="2">
-                                <span class="thread-radio__label">2</span>
-                            </label>
-                            <label class="thread-radio">
-                                <input type="radio" name="max-concurrency" value="4" checked>
-                                <span class="thread-radio__label">4</span>
-                            </label>
-                            <label class="thread-radio">
-                                <input type="radio" name="max-concurrency" value="6">
-                                <span class="thread-radio__label">6</span>
-                            </label>
-                        </div>
-                    </div>
-
                     <!-- Retain WebODM task toggle (v0.7.6) ──────────────── -->
                     <div class="field-row capacity-block">
                         <label class="capacity-toggle">
@@ -1014,8 +970,20 @@
                     <!-- Standby panel (during ODM + GDAL) -->
                     <div id="standby" class="standby" style="display:none;">
                         <div class="standby__title">Images Processing Now &middot; Standby</div>
-                        <div class="standby__sub">Typical run is 3–5 minutes for 30–70 photos. The page can be left open; status will update on its own.</div>
+                        <div class="standby__sub">Typical run is 3&ndash;5 minutes for 30&ndash;70 photos. The page can be left open or reloaded; status will update on its own.</div>
                         <div id="phase-label" class="phase-label" style="display:none;"></div>
+                        <!-- Live ODM progress (v0.7.13) — fed by webodm_progress /
+                             webodm_stage from status_view, which were returned by the
+                             backend since v0.7.2 but never rendered. -->
+                        <div id="odm-progress" class="progress-wrap progress-wrap--odm" style="display:none;">
+                            <div class="progress-label progress-label--odm">
+                                <span id="odm-stage">Processing</span>
+                                <span id="odm-pct">0%</span>
+                            </div>
+                            <div class="progress-track progress-track--odm">
+                                <div id="odm-fill" class="progress-fill progress-fill--odm"></div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Cancel button (only while running) -->
@@ -1078,9 +1046,12 @@
                         <span class="guide-section__title">Image Capture</span>
                     </div>
                     <div class="guide-prose">
-                        <p>The single biggest factor in a fast, clean run is <strong>flying high enough</strong> &mdash; coverage and ground resolution trade off, and doubling altitude roughly quarters the photo count. <strong>60&ndash;100 m AGL</strong> is the working band for most overlays. Drop to 30&ndash;50 m only when fine detail truly matters.</p>
+                        <p>The single biggest factor in a fast, clean run is <strong>flying high enough</strong> &mdash; coverage and ground resolution trade off, and doubling altitude roughly quarters the photo count. <strong>200&ndash;330 ft AGL</strong> is the working band for most overlays. Drop to 100&ndash;160 ft only when fine detail truly matters.</p>
                         <p><strong>Overlap matters more than total image count.</strong> Aim for <strong>75% frontal</strong> and <strong>65% side</strong> overlap. Most mission-planning apps calculate this &mdash; trust their planner over a manual count.</p>
-                        <p>Fly a <strong>lawnmower grid</strong> over the target at consistent altitude. For high-detail jobs, fly the grid twice with the second pass rotated 90&deg;. <strong>GPS lock</strong> must be solid before takeoff &mdash; take a single image on the ground to establish a baseline.</p>
+                        <p>Fly an <strong>S-pattern grid</strong> over the target at consistent altitude &mdash; parallel passes across the area, reversing direction at each end. For high-detail jobs, fly the grid twice with the second pass rotated 90&deg;. <strong>GPS lock</strong> must be solid before takeoff &mdash; take a single image on the ground to establish a baseline.</p>
+                        <div class="guide-callout">
+                            <strong>Regulatory note:</strong> Always comply with applicable FAA altitude regulations. In uncontrolled airspace the standard sUAS ceiling is <strong>400 ft AGL</strong>; operations near controlled airspace or structures may require authorization. Confirm airspace status before flight.
+                        </div>
                         <div class="guide-callout">
                             <strong>Limit:</strong> 150 photos per job by default. Enable <strong>high-capacity mode</strong> below the photo picker to allow up to 300 photos per job.
                         </div>
@@ -1101,7 +1072,6 @@
                     <ul class="guide-bullets">
                         <li><strong>High-Resolution mode</strong> &mdash; pins output to 2.5 cm/px GSD (visibly finer detail). Runtime ~10 min for a 65-photo job.</li>
                         <li><strong>Terrain correction</strong> &mdash; runs full 3D reconstruction; corrects geometric error from elevation change and tall vertical features (buildings, towers, rubble piles). Runtime ~35 min. Both modes together: ~42 min.</li>
-                        <li><strong>Processing threads</strong> &mdash; 4 by default. Drop to 2 if the host is under other heavy load; raise to 6 only when the host is otherwise idle.</li>
                         <li><strong>Save WebODM Task</strong> &mdash; retains the source WebODM project for inspection. Cleared at the 72-hour purge along with the job record.</li>
                     </ul>
                 </div>
@@ -1116,8 +1086,11 @@
                 <div class="guide-prose">
                     <p>When a job completes, a <strong>GeoTIFF</strong> download button appears in the <strong>Downloads</strong> section above. Verified compatible with <strong>CloudTAK</strong> and <strong>TAKAware</strong>.</p>
                     <p><strong>CloudTAK:</strong> open <strong>Overlay Tool</strong> &gt; <strong>"+"</strong> &gt; <strong>"Your Files"</strong>, then use the <strong>"Upload Icon"</strong> to add the GeoTIFF.</p>
+                    <div class="guide-callout" style="border-left-color: var(--accent-red-dim);">
+                        <strong style="color: var(--accent-red);">Not to scale</strong> &mdash; unless the sUAS used RTK positioning, this overlay is <strong>not geometrically accurate</strong> and must not be used for measurements, boundary determinations, or any purpose requiring positional precision. Based on observed results, expect typical positional error of <strong>&plusmn;5 ft</strong> with extremes up to <strong>&plusmn;25 ft</strong>. Use for situational awareness only.
+                    </div>
                     <div class="guide-callout">
-                        <strong>72-hour purge.</strong> The GeoTIFF is automatically deleted from the server 72 hours after the job completes. Overlays from sUAS without RTK may be up to &plusmn;10 m off ground truth; typically half that.
+                        <strong>72-hour purge.</strong> The GeoTIFF is automatically deleted from the server 72 hours after the job completes.
                     </div>
                 </div>
             </div>
@@ -1130,7 +1103,7 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
-// TAK Incident Overlay Generator — UI script (v0.7.10)
+// TAK Incident Overlay Generator — UI script (v0.7.13)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // State machine:
@@ -1159,7 +1132,42 @@ document.addEventListener('DOMContentLoaded', function() {
     // Node status — check on load then every 30 seconds
     checkNodeStatus();
     setInterval(checkNodeStatus, 30000);
+
+    // Restore a running job after page reload (v0.7.13).
+    // The pipeline runs server-side, so closing or reloading the page
+    // doesn't stop a job — but before this fix, a reload lost activeJobId
+    // and the UI showed "Idle" while the job kept running, with no
+    // progress display and no way to cancel. archive.get_running_job()
+    // existed for exactly this and was never wired up; the jobs/ endpoint
+    // already returns running jobs, so we use that. Runs ONCE at page
+    // load only — deliberately not part of the 60s loadArchive loop, so
+    // a job submitted from another operator's machine mid-session can't
+    // hijack this tab's form state.
+    restoreRunningJob();
 });
+
+function restoreRunningJob() {
+    fetch('/plugins/tak_incident_overlay/jobs/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok || activeJobId) return;
+            var jobs = data.jobs || [];
+            var running = null;
+            for (var i = 0; i < jobs.length; i++) {
+                if (jobs[i].status === 'running') { running = jobs[i]; break; }
+            }
+            if (!running) return;
+
+            activeJobId = running.job_id;
+            setFormLocked(true);
+            showProcessPhase();
+            if (running.phase) updatePhaseLabel(running.phase);
+            startPolling();
+        })
+        .catch(function() {
+            // Soft-fail — page just starts idle, same as before this fix
+        });
+}
 
 // ── Photo selection ────────────────────────────────────────────────────────
 
@@ -1198,14 +1206,6 @@ document.getElementById('terrain-correction-toggle').addEventListener('change', 
     var warning = document.getElementById('terrain-correction-warning');
     warning.style.display = this.checked ? '' : 'none';
 });
-
-// ── Processing threads radio group (v0.7.8) ───────────────────────────────
-
-function getSelectedConcurrency() {
-    var checked = document.querySelector('input[name="max-concurrency"]:checked');
-    return checked ? parseInt(checked.value, 10) : 4;
-}
-
 
 // If a selection larger than the new limit exists when toggles change,
 // clear it and warn — better than silently letting the user think it's fine.
@@ -1307,7 +1307,6 @@ function onProcessClick() {
     fd.append('retain_task', document.getElementById('retain-task-toggle').checked ? 'true' : 'false');
     fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
     fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
-    fd.append('max_concurrency', getSelectedConcurrency());
     for (var i = 0; i < files.length; i++) fd.append('images[]', files[i]);
 
     setFormLocked(true);
@@ -1394,6 +1393,20 @@ function pollStatus() {
             // Update phase label whenever a phase is present
             if (data.phase) updatePhaseLabel(data.phase);
 
+            // Live ODM progress (v0.7.13). webodm_progress is 0.0–1.0 while
+            // the WebODM task exists; null once the pipeline moves past ODM
+            // or before the task is created. webodm_stage gives the human
+            // label ("Feature extraction", "Densification", ...). During the
+            // GDAL phases stage comes back empty — fall back to the archive
+            // phase so the label stays meaningful end to end.
+            if (data.status === 'running' && data.webodm_progress !== null &&
+                data.webodm_progress !== undefined) {
+                setOdmProgress(
+                    Math.round(data.webodm_progress * 100),
+                    data.webodm_stage || data.phase || 'Processing'
+                );
+            }
+
             if (data.status === 'completed') {
                 stopPolling();
                 updatePhaseLabel('');
@@ -1468,13 +1481,20 @@ function loadArchive() {
 }
 
 function renderArchive(jobs) {
-    var completed = jobs.filter(function(j) { return j.status === 'completed'; });
+    // v0.7.13: show failed and cancelled jobs alongside completed ones.
+    // Previously only completed jobs rendered, so a job that failed while
+    // the operator was away left no visible trace — the flash message is
+    // only shown live. For an incident tool, "the 1259 run failed and
+    // here's why" is operationally useful history.
+    var shown = jobs.filter(function(j) {
+        return j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled';
+    });
 
     var empty = document.getElementById('archive-empty');
     var table = document.getElementById('archive-table');
     var tbody = document.getElementById('archive-tbody');
 
-    if (completed.length === 0) {
+    if (shown.length === 0) {
         empty.style.display = '';
         table.style.display = 'none';
         return;
@@ -1484,13 +1504,22 @@ function renderArchive(jobs) {
     table.style.display = '';
     tbody.innerHTML = '';
 
-    completed.forEach(function(job) {
+    shown.forEach(function(job) {
+        var isCompleted = job.status === 'completed';
         var tr = document.createElement('tr');
+        if (!isCompleted) tr.className = 'archive-row--dimmed';
 
-        // Incident name (with completion timestamp underneath)
+        // Incident name (+ status chip for failed/cancelled)
+        var nameHtml = '<div class="archive-job-name">' + esc(job.display_name);
+        if (job.status === 'failed') {
+            nameHtml += '<span class="archive-status archive-status--failed" title="' +
+                        esc(job.error || 'Processing failed') + '">Failed</span>';
+        } else if (job.status === 'cancelled') {
+            nameHtml += '<span class="archive-status archive-status--cancelled">Cancelled</span>';
+        }
+        nameHtml += '</div>';
         var tdName = document.createElement('td');
-        tdName.innerHTML =
-            '<div class="archive-job-name">' + esc(job.display_name) + '</div>';
+        tdName.innerHTML = nameHtml;
         tr.appendChild(tdName);
 
         // Date
@@ -1499,8 +1528,8 @@ function renderArchive(jobs) {
             '<span class="archive-meta">' + formatDate(job.completed_at) + '</span>';
         tr.appendChild(tdDate);
 
-        // File size — GeoTIFF only as of v0.7.8
-        var hasGeotiff = !!(job.geotiff_filename && job.geotiff_size_bytes);
+        // File size — GeoTIFF only as of v0.7.8; only completed jobs have one
+        var hasGeotiff = !!(isCompleted && job.geotiff_filename && job.geotiff_size_bytes);
         var sizesHtml = hasGeotiff
             ? '<div class="archive-meta">TIF&nbsp;' + formatSize(job.geotiff_size_bytes) + '</div>'
             : '<div class="archive-meta">—</div>';
@@ -1527,7 +1556,7 @@ function renderArchive(jobs) {
         // ── Row 2: WebODM link (if retained) + delete ───────────
         actionsHtml += '<div class="archive-actions__row">';
 
-        if (job.retain_task && job.webodm_project_id) {
+        if (isCompleted && job.retain_task && job.webodm_project_id) {
             actionsHtml +=
                 '<a href="/dashboard/?project_task_open=' + esc(String(job.webodm_project_id)) + '" ' +
                    'class="btn btn--sm" ' +
@@ -1596,6 +1625,7 @@ function showProcessPhase() {
     document.getElementById('progress-wrap').style.display = 'none';
     document.getElementById('standby').style.display       = '';
     document.getElementById('cancel-wrap').style.display   = '';
+    hideOdmProgress();
     showStatusActive('Processing');
 }
 
@@ -1613,6 +1643,7 @@ function resetToIdle() {
     document.getElementById('standby').style.display       = 'none';
     document.getElementById('cancel-wrap').style.display   = 'none';
     updatePhaseLabel('');
+    hideOdmProgress();
     document.getElementById('photo-input').value = '';
     document.getElementById('incident-name').value = '';
     updateDropZone();
@@ -1631,6 +1662,24 @@ function resetToIdle() {
 function setUploadProgress(pct) {
     document.getElementById('progress-fill').style.width = pct + '%';
     document.getElementById('progress-pct').textContent  = pct + '%';
+}
+
+function setOdmProgress(pct, stageLabel) {
+    var wrap = document.getElementById('odm-progress');
+    if (!wrap) return;
+    wrap.style.display = '';
+    document.getElementById('odm-fill').style.width   = pct + '%';
+    document.getElementById('odm-pct').textContent    = pct + '%';
+    document.getElementById('odm-stage').textContent  = stageLabel || 'Processing';
+}
+
+function hideOdmProgress() {
+    var wrap = document.getElementById('odm-progress');
+    if (!wrap) return;
+    wrap.style.display = 'none';
+    document.getElementById('odm-fill').style.width  = '0%';
+    document.getElementById('odm-pct').textContent   = '0%';
+    document.getElementById('odm-stage').textContent = 'Processing';
 }
 
 function showFlash(id, msg) {

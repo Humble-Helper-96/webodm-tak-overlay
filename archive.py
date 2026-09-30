@@ -1,5 +1,5 @@
 """
-archive.py — TAK Incident Overlay (v0.7.10)
+archive.py — TAK Incident Overlay (v0.7.13)
 Job index management, archive directory, and 72-hour auto-purge.
 
 Directory layout (all under settings.MEDIA_ROOT):
@@ -17,9 +17,11 @@ Job record schema:
         "job_id":              str (UUID4),
         "incident_name":       str (operator input),
         "display_name":        str ("{incident_name} YYYY-MM-DD HHMM"),
-        "filename":            str ("{display_name}.mbtiles", legacy field retained
-                                    for backward-compat cleanup of pre-v0.7.8 files),
-        "geotiff_filename":    str ("{display_name}.tif",     filesystem-safe),  # v0.7+
+        "filename":            str ("{display_name}_{job_id[:8]}.mbtiles", legacy field
+                                    retained for backward-compat cleanup of pre-v0.7.8 files),
+        "geotiff_filename":    str ("{display_name}_{job_id[:8]}.tif",  filesystem-safe;
+                                    UUID suffix added v0.7.13 to prevent same-minute
+                                    same-name collisions),  # v0.7+
         "status":              "running" | "completed" | "failed" | "cancelled",
         "phase":               str (current processing phase label, v0.7.2+),
         "created_at":          str (ISO 8601, UTC),
@@ -35,10 +37,8 @@ Job record schema:
                                              # textured orthorectification). Corrects for
                                              # varied terrain and tall vertical features.
                                              # Reference hardware (M920q i5-8500), 65-photo
-                                             # job at 4 threads: ~35 min vs ~3 min default.
+                                             # job at 3 threads: ~35 min vs ~3 min default.
                                              # (v0.7.8+)
-        "max_concurrency":     int,          # CPU thread count for ODM processing,
-                                             # one of {2, 4, 6}, default 4 (v0.7.8+)
         "file_size_bytes":     int | null,   # legacy MBTiles size; always null for v0.7.8+ jobs
         "geotiff_size_bytes":  int | null,   # RGB GeoTIFF size (v0.7+)
         "error":               str | null
@@ -195,7 +195,7 @@ def _delete_webodm_project_by_id(project_id):
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
-               quality_mode=False, terrain_correction=False, max_concurrency=4):
+               quality_mode=False, terrain_correction=False):
     """
     Create a new job record in running state.
     Returns the job_id (UUID string).
@@ -224,19 +224,23 @@ def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
                                    textured orthorectification). Corrects for
                                    varied terrain and tall vertical features.
                                    Reference hardware (M920q i5-8500), 65-photo
-                                   job at 4 threads: ~35 min vs ~3 min default;
+                                   job at 3 threads: ~35 min vs ~3 min default;
                                    ~42 min combined with quality_mode. UI label:
                                    "Terrain correction".
-        max_concurrency    (int):  Number of CPU threads ODM uses during
-                                   processing. Expected to be one of
-                                   {2, 4, 6}; caller (api.py) validates.
-                                   Defaults to 4.
     """
     job_id = str(uuid.uuid4())
     utc_now  = datetime.now(timezone.utc)
     local_dt = utc_now + timedelta(minutes=tz_offset_minutes)
     display_name = '{} {}'.format(incident_name, local_dt.strftime('%Y-%m-%d %H%M'))
-    safe_base = _sanitize_filename(display_name)
+    # Suffix the first 8 chars of the job UUID onto the filename base.
+    # display_name is only minute-precise, so two jobs with the same
+    # incident name in the same minute (a quick retry is the realistic
+    # case) would otherwise share a geotiff_filename — the second job's
+    # output overwrites the first's, and deleting either job removes the
+    # shared file out from under the surviving record. The UUID suffix
+    # makes every job's output path unique. display_name (what the
+    # operator sees in the UI) is unchanged.
+    safe_base = '{}_{}'.format(_sanitize_filename(display_name), job_id[:8])
     filename         = '{}.mbtiles'.format(safe_base)
     geotiff_filename = '{}.tif'.format(safe_base)
 
@@ -255,7 +259,6 @@ def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
         'retain_task':        retain_task,
         'quality_mode':       quality_mode,
         'terrain_correction': terrain_correction,
-        'max_concurrency':    max_concurrency,
         'file_size_bytes':    None,
         'geotiff_size_bytes': None,
         'error':              None,
