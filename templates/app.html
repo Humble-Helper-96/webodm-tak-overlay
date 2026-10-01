@@ -1452,6 +1452,23 @@ function finalizeGroups(groups) {
     });
 }
 
+// Short, human-readable label for a group's job name suffix (e.g. the
+// "[...]" in "AutelTest02 [MAX 4000×3000]"). Prefers the filename prefix
+// when exactly one was seen (the clearest signal to an operator — "MAX"
+// vs "IRX" reads better than a repeated camera string) but always appends
+// dimensions too: two cameras on the same rig can report the identical
+// EXIF Make/Model (seen in practice — a dual RGB+thermal gimbal whose
+// sensors share one "camera" identifier), and relying on g.camera alone
+// then produces two jobs with the same name. Dimensions are part of what
+// makes groupKey distinct in the first place, so appending them always
+// restores a unique label even when the camera string collides.
+function groupNameSuffix(g) {
+    var dims = g.width + '×' + g.height;
+    if (g.prefixes && g.prefixes.length === 1) return g.prefixes[0] + ' ' + dims;
+    if (g.camera) return g.camera + ' ' + dims;
+    return dims;
+}
+
 async function analyzePhotos(files) {
     photoAnalysis = { points: [], groups: [], noGps: [], duplicates: [], mixedCameras: false };
     var seen = {};
@@ -3255,7 +3272,7 @@ async function onProcessClick() {
         var split = filterToGroup(fileArray, group.key);
         if (split.files.length === 0) continue; // GPS filter removed this group entirely
 
-        var jobName = name + ' [' + (group.camera || (group.width + '×' + group.height)) + ']';
+        var jobName = name + ' [' + groupNameSuffix(group) + ']';
         var groupLabel = 'JOB ' + (gi + 1) + ' OF ' + groupsToRun.length;
 
         var jobResult = await runOneJob(split.files, split.points, jobName, groupLabel);

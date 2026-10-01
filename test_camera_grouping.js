@@ -96,7 +96,7 @@ function loadGroupingFunctions() {
     var names = [
         'readExifData', 'parseTiffHeader', 'readAscii', 'readRationalDegrees',
         'readRational', 'extractFilenamePrefix', 'finalizeGroups',
-        'analyzePhotos', 'filterToGroup', 'isJpegFilename',
+        'groupNameSuffix', 'analyzePhotos', 'filterToGroup', 'isJpegFilename',
     ];
     var src = names.map(function(name) { return extractFunction(html, name); }).join('\n');
     var sandbox = {};
@@ -106,7 +106,7 @@ function loadGroupingFunctions() {
     sandbox.photoAnalysis = { points: [], groups: [], noGps: [], duplicates: [], mixedCameras: false };
     var vm = require('vm');
     vm.createContext(sandbox);
-    vm.runInContext(src + '\n;this.__exports = { readExifData, extractFilenamePrefix, finalizeGroups, analyzePhotos, filterToGroup, isJpegFilename, getPhotoAnalysis: function(){ return photoAnalysis; } };', sandbox);
+    vm.runInContext(src + '\n;this.__exports = { readExifData, extractFilenamePrefix, finalizeGroups, groupNameSuffix, analyzePhotos, filterToGroup, isJpegFilename, getPhotoAnalysis: function(){ return photoAnalysis; } };', sandbox);
     return sandbox.__exports;
 }
 
@@ -209,6 +209,7 @@ async function main() {
     var filterToGroup = fns.filterToGroup;
     var isJpegFilename = fns.isJpegFilename;
     var extractFilenamePrefix = fns.extractFilenamePrefix;
+    var groupNameSuffix = fns.groupNameSuffix;
 
     var rgbBuf = buildJpegFixture(4000, 3000, 'AutelRobotics', 'XT705RC');
     var thermalBuf = buildJpegFixture(640, 512, 'AutelRobotics', 'ThermalXT2');
@@ -343,6 +344,32 @@ async function main() {
         rgbRwSplit.files.length === 2 &&
         rgbRwSplit.files.map(function(f) { return f.name; }).sort().join(',') === 'MAX_0003.JPG,MAX_0004.JPG',
         rgbRwSplit.files.map(function(f) { return f.name; }));
+
+    // ── Job name collision when two groups share one EXIF camera string ─
+    // Reported live: a dual RGB+thermal gimbal whose two sensors both
+    // report the same EXIF Make/Model ("Camera XL726") produced two jobs
+    // both named "Incident [Camera XL726]" — indistinguishable in the job
+    // list even though grouping itself was correct (dimensions still kept
+    // them as separate groups/jobs). groupNameSuffix must disambiguate.
+    var sharedCamBuf1 = buildJpegFixture(4000, 3000, 'Autel', 'Camera XL726');
+    var sharedCamBuf2 = buildJpegFixture(640, 512, 'Autel', 'Camera XL726');
+    var sharedCamResult = await analyzePhotos([
+        new FakeFile(sharedCamBuf1, 'MAX_0001.JPG'),
+        new FakeFile(sharedCamBuf2, 'IRX_0001.jpg'),
+    ]);
+    check('shared-camera-string groups: still detected as 2 distinct groups',
+        sharedCamResult.groups.length === 2, sharedCamResult.groups);
+    var suffixes = sharedCamResult.groups.map(groupNameSuffix);
+    check('shared-camera-string groups: job name suffixes are NOT identical',
+        suffixes[0] !== suffixes[1], suffixes);
+    check('shared-camera-string groups: prefix preferred over the shared camera string',
+        suffixes.indexOf('MAX 4000×3000') !== -1 && suffixes.indexOf('IRX 640×512') !== -1, suffixes);
+
+    // groupNameSuffix fallbacks when there's no single clean prefix.
+    check('groupNameSuffix: falls back to camera+dims when prefixes are ambiguous',
+        groupNameSuffix({ width: 640, height: 512, camera: 'SomeCam', prefixes: ['AAA', 'BBB'] }) === 'SomeCam 640×512');
+    check('groupNameSuffix: falls back to dims alone with no camera and no clean prefix',
+        groupNameSuffix({ width: 640, height: 512, camera: '', prefixes: [] }) === '640×512');
 
     console.log('');
     if (failures.length === 0) {
