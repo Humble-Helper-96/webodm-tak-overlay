@@ -562,6 +562,10 @@
             background: rgba(224,58,58,0.08); border: 1px solid rgba(224,58,58,0.3);
             color: #f0a0a0;
         }
+        .flash--info {
+            background: rgba(0,174,239,0.08); border: 1px solid rgba(0,174,239,0.3);
+            color: var(--text);
+        }
         .flash__close {
             float: right; background: transparent; border: none;
             color: inherit; cursor: pointer; font-size: 14px; padding: 0 0 0 12px;
@@ -806,6 +810,16 @@
                                accept="image/jpeg,image/jpg,.jpeg,.jpg" multiple
                                onchange="onFilesSelected(this)">
                     </div>
+                </div>
+
+                <!-- Camera group picker (v0.8.5) — shown only when the
+                     selection contains more than one detected camera group
+                     (e.g. a dual RGB+thermal drone). Hidden for the common
+                     single-camera case. -->
+                <div class="field-row" id="camera-groups-container" style="display:none;">
+                    <label class="field-label">CAMERA GROUPS</label>
+                    <div class="field-hint">Multiple camera groups were detected. Select which to process — each runs as its own job.</div>
+                    <div class="options-box" id="camera-groups-list"></div>
                 </div>
 
                 <!-- Flight path map (v0.8.3) -->
@@ -1091,6 +1105,23 @@
 var POLL_INTERVAL = 5000;
 var pollTimer     = null;
 var activeJobId   = null;
+// v0.8.5: called by pollStatus() when activeJobId reaches a terminal state
+// (completed/failed/cancelled), instead of pollStatus() always resetting
+// the form itself. Default (null) behavior is exactly the original
+// single-job flow: reset the form and reload the archive. The mixed-camera
+// auto-split flow in onProcessClick overrides this per group so it can
+// move on to the next group's upload instead of resetting mid-batch, then
+// restores it to null for the final group (or clears it directly once the
+// whole batch is done).
+var onJobTerminal = null;
+// v0.8.5: the JPEG subset of the operator's last file selection, after
+// excluding non-JPEG sidecar/raw files (.TIFF, .irg, etc. — common
+// alongside JPEGs in a thermal camera's output folder). This is the
+// canonical "what's actually selected" list everywhere in the form —
+// #photo-input's native .files always reflects the raw OS selection
+// (JPEG and non-JPEG alike), which is why nothing else reads it directly
+// once a selection is made.
+var selectedPhotoFiles = [];
 var selectedJobId = null;
 var jobsCache     = [];
 var nodeInfo      = { online: false, name: '', queueCount: 0, cpuCores: 0, memoryPercent: 0 };
@@ -1380,6 +1411,47 @@ function readRational(bytes, view, pos, littleEndian) {
 
 // ── Photo analysis (v0.8.3) ───────────────────────────────────
 
+// Generic structural pattern — a leading run of letters immediately before
+// the first digit run, e.g. "MAX_0003.JPG" -> "MAX", "IRX_0003.jpg" -> "IRX",
+// "DJI_0001.JPG" -> "DJI", "DSC00123.JPG" -> "DSC". Deliberately has no
+// knowledge of any camera brand or model: it is a shape match ("letters
+// then digits"), not a lookup table, so it works the same way regardless of
+// which manufacturer's naming convention produced the file. Returns null
+// when the name doesn't fit that shape (e.g. starts with a digit) — absence
+// of a prefix is a valid outcome, not an error, since filename pattern is
+// only ever supporting evidence here (see groupKey below).
+function extractFilenamePrefix(name) {
+    var m = /^([A-Za-z]+)[_\-]?\d/.exec(name);
+    return m ? m[1].toUpperCase() : null;
+}
+
+// Fills in each group's display-facing fields from the raw counts collected
+// during the analyzePhotos loop: prefixes (sorted, most common first),
+// a human-readable evidence string, and an uncertain flag for groups where
+// the evidence is weaker than normal (no EXIF camera reported, or more than
+// one filename prefix inside what dimensions+camera called a single group —
+// the latter can legitimately happen if a camera doesn't write Make/Model
+// and two different photo sets happen to share a resolution). uncertain
+// doesn't change how a group is processed — it only changes how strongly
+// the picker UI tells the operator to double-check it (requirement: the
+// operator can always override by selecting/deselecting groups directly).
+function finalizeGroups(groups) {
+    groups.forEach(function(g) {
+        var prefixes = Object.keys(g.prefixCounts).sort(function(a, b) {
+            return g.prefixCounts[b] - g.prefixCounts[a];
+        });
+        g.prefixes = prefixes;
+
+        var evidenceParts = [g.width + '×' + g.height];
+        if (g.camera) evidenceParts.push(g.camera);
+        if (prefixes.length === 1) evidenceParts.push('prefix "' + prefixes[0] + '"');
+        else if (prefixes.length > 1) evidenceParts.push(prefixes.length + ' filename patterns');
+        g.evidence = evidenceParts.join(' · ');
+
+        g.uncertain = !g.camera || prefixes.length > 1;
+    });
+}
+
 async function analyzePhotos(files) {
     photoAnalysis = { points: [], groups: [], noGps: [], duplicates: [], mixedCameras: false };
     var seen = {};
@@ -1405,7 +1477,13 @@ async function analyzePhotos(files) {
                 } catch(e) {}
             }
 
-            // Group by size and camera
+            // Group by dimensions + EXIF camera (Make/Model) — the two most
+            // reliable, platform-agnostic signals a camera's own output
+            // actually carries. Filename prefix is tracked per photo too,
+            // but only as supporting evidence surfaced in the UI (see
+            // finalizeGroups below) and as a corroborating/uncertainty
+            // signal — it never by itself decides which group a photo is in.
+            var prefix = extractFilenamePrefix(file.name);
             var groupKey = width + '×' + height + '|' + (exif.camera || 'unknown');
 
             var point = {
@@ -1416,15 +1494,22 @@ async function analyzePhotos(files) {
                 width: width,
                 height: height,
                 camera: exif.camera || (width + '×' + height),
+                prefix: prefix,
                 groupKey: groupKey
             };
             photoAnalysis.points.push(point);
 
             if (!groupMap[groupKey]) {
-                groupMap[groupKey] = { key: groupKey, width: width, height: height, count: 0, camera: exif.camera || '' };
+                groupMap[groupKey] = {
+                    key: groupKey, width: width, height: height, count: 0,
+                    camera: exif.camera || '', prefixCounts: {}
+                };
                 photoAnalysis.groups.push(groupMap[groupKey]);
             }
             groupMap[groupKey].count++;
+            if (prefix) {
+                groupMap[groupKey].prefixCounts[prefix] = (groupMap[groupKey].prefixCounts[prefix] || 0) + 1;
+            }
 
             // Check GPS
             if (exif.lat == null || exif.lon == null) {
@@ -1440,20 +1525,27 @@ async function analyzePhotos(files) {
         } catch(err) {
             // If we can't read the file, add it with no data
             var fallbackKey = '0×0|unknown';
+            var fallbackPrefix = extractFilenamePrefix(file.name);
             photoAnalysis.points.push({
                 name: file.name, lat: null, lon: null, time: null,
-                width: 0, height: 0, camera: 'unknown', groupKey: fallbackKey
+                width: 0, height: 0, camera: 'unknown', prefix: fallbackPrefix, groupKey: fallbackKey
             });
             photoAnalysis.noGps.push(file.name);
             if (!groupMap[fallbackKey]) {
-                groupMap[fallbackKey] = { key: fallbackKey, width: 0, height: 0, count: 0, camera: '' };
+                groupMap[fallbackKey] = { key: fallbackKey, width: 0, height: 0, count: 0, camera: '', prefixCounts: {} };
                 photoAnalysis.groups.push(groupMap[fallbackKey]);
             }
             groupMap[fallbackKey].count++;
+            if (fallbackPrefix) {
+                groupMap[fallbackKey].prefixCounts[fallbackPrefix] = (groupMap[fallbackKey].prefixCounts[fallbackPrefix] || 0) + 1;
+            }
         }
     }
 
-    // Sort groups by count (largest first)
+    finalizeGroups(photoAnalysis.groups);
+
+    // Sort groups by count (largest first) — display order only; nothing
+    // downstream treats groups[0] as a default "keep this one" choice.
     photoAnalysis.groups.sort(function(a, b) { return b.count - a.count; });
 
     // Mixed cameras = more than one group
@@ -1462,58 +1554,74 @@ async function analyzePhotos(files) {
     return photoAnalysis;
 }
 
-// ── Mixed camera prompt (v0.8.3) ─────────────────────────────
+// ── Mixed camera selection (v0.8.3; v0.8.5: operator picks groups) ───────
+//
+// Earlier versions asked the operator to keep only the largest group (by
+// photo count) and silently discarded the rest with a single OK/Cancel
+// prompt. On a real Autel 640T dual-camera flight that kept the thermal
+// stream and discarded the RGB imagery — the opposite of what the operator
+// wanted, with no way to choose otherwise, and no way to get the RGB
+// photos back without re-selecting from scratch. Nothing is ever dropped
+// automatically now: every detected group is shown with its evidence, the
+// operator checks the group(s) they actually want, and only those run —
+// each as its own independent job (see onProcessClick). The original
+// selection (selectedPhotoFiles) is untouched by any of this; a group the
+// operator didn't check is simply never uploaded, not deleted or hidden.
 
-function confirmMixedCameras() {
-    var groups = photoAnalysis.groups;
-    if (groups.length <= 1) return true;
-
-    var msg = 'Multiple camera types detected:\n\n';
-    groups.forEach(function(g) {
-        var label = g.camera || (g.width + '×' + g.height);
-        msg += '  ' + g.count + ' photos at ' + label + '\n';
-    });
-    msg += '\nKeep the largest group (' + groups[0].count + ' photos) and remove the rest?';
-
-    return confirm(msg);
+// Returns the group keys currently checked in the picker. When the picker
+// isn't showing (0 or 1 groups detected), there's nothing to read — callers
+// treat that as "not applicable," not "zero selected."
+function getSelectedGroupKeys() {
+    var boxes = document.querySelectorAll('#camera-groups-list input[type=checkbox]:checked');
+    return Array.prototype.map.call(boxes, function(b) { return b.getAttribute('data-group-key'); });
 }
 
-// Remove photos outside the largest camera group (operator confirmed via
-// confirmMixedCameras). Filters fileArray and keeps photoAnalysis in sync
-// (points/noGps/groups) so the picker stats, flight path map and upload
-// all agree on which photos remain.
-function filterToLargestCameraGroup(files) {
-    var groups = photoAnalysis.groups;
-    if (groups.length <= 1) return files;
+function renderCameraGroupsUI() {
+    var container = document.getElementById('camera-groups-container');
+    var list = document.getElementById('camera-groups-list');
+    if (!container || !list) return;
 
-    var keepKey = groups[0].key;
+    var html = '';
+    photoAnalysis.groups.forEach(function(g, idx) {
+        var checkboxId = 'camera-group-' + idx;
+        html += '<div class="option-row">';
+        html += '<label class="switch"><input type="checkbox" id="' + checkboxId + '" ' +
+                'data-group-key="' + esc(g.key) + '" checked onchange="updateProcessButton()">' +
+                '<span class="switch__track"></span></label>';
+        html += '<span class="option-row__name">' + g.count + ' PHOTOS</span>';
+        html += '<span class="option-row__hint">' + esc(g.evidence) +
+                (g.uncertain ? ' — uncertain, please verify' : '') + '</span>';
+        html += '</div>';
+    });
+    list.innerHTML = html;
+    container.style.display = '';
+}
 
-    // Filter files and points together by index — photoAnalysis.points[i]
-    // corresponds 1:1 to files[i] (built together, in order, in the same
-    // loop in analyzePhotos). Filtering by file name instead would wrongly
-    // keep (or drop) a photo whenever two different cameras happen to
-    // produce the same name — the realistic case here is a dual-sensor
-    // drone (e.g. Autel EVO II Dual) where both the visual and thermal
-    // streams use the same sequential DJI_000N.JPG-style naming, which is
-    // exactly the mixed-camera scenario this filter exists to resolve.
+function hideCameraGroupsUI() {
+    var container = document.getElementById('camera-groups-container');
+    if (container) container.style.display = 'none';
+}
+
+// Filter files and points to one camera group, by index. photoAnalysis.
+// points[i] corresponds 1:1 to files[i] (built together, in order, in the
+// same loop in analyzePhotos) — filtering by file name instead would wrongly
+// keep (or drop) a photo whenever two different cameras happen to produce
+// the same name, which is realistic for a dual-sensor drone whose visual
+// and thermal streams both use the same sequential DJI_000N.JPG-style
+// naming. Returns {files, points} for just that group; does not mutate the
+// shared photoAnalysis object, since the caller needs to do this once per
+// group from the same original selection.
+function filterToGroup(files, groupKey) {
     var filtered = [];
     var keptPoints = [];
     for (var i = 0; i < files.length; i++) {
         var point = photoAnalysis.points[i];
-        if (point && point.groupKey === keepKey) {
+        if (point && point.groupKey === groupKey) {
             filtered.push(files[i]);
             keptPoints.push(point);
         }
     }
-
-    photoAnalysis.points = keptPoints;
-    photoAnalysis.noGps = keptPoints
-        .filter(function(p) { return p.lat == null || p.lon == null; })
-        .map(function(p) { return p.name; });
-    photoAnalysis.groups = [groups[0]];
-    photoAnalysis.mixedCameras = false;
-
-    return filtered;
+    return { files: filtered, points: keptPoints };
 }
 
 // ── Flight path map (v0.8.3, Workstream E part 1) ─────────────
@@ -2752,101 +2860,131 @@ function onHighCapacityToggled() {
 }
 
 function revalidateSelection() {
-    var input = document.getElementById('photo-input');
-    var n = (input.files || []).length;
+    var n = selectedPhotoFiles.length;
     var limit = getEffectiveLimit();
     if (n > limit) {
-        input.value = '';
+        document.getElementById('photo-input').value = '';
+        selectedPhotoFiles = [];
         updatePickerUI();
         updateProcessButton();
+        hideCameraGroupsUI();
         showFlash('flash-upload',
             'Selection cleared — ' + n + ' photos exceeds the current limit of ' + limit + '.');
     }
 }
 
+// A JPEG, case-insensitively — .jpg/.JPG/.jpeg/.JPEG/.Jpg/etc. all count.
+function isJpegFilename(name) {
+    var n = name.toLowerCase();
+    return n.endsWith('.jpg') || n.endsWith('.jpeg');
+}
+
 function onFilesSelected(input) {
     hideFlash('flash-upload');
-    var files = Array.prototype.slice.call(input.files || []);
+    var rawFiles = Array.prototype.slice.call(input.files || []);
 
-    var nonJpeg = files.filter(function(f) {
-        var n = f.name.toLowerCase();
-        return !(n.endsWith('.jpg') || n.endsWith('.jpeg'));
-    });
-
-    if (nonJpeg.length) {
-        showFlash('flash-upload',
-            'Only JPG/JPEG photos are supported. ' + nonJpeg.length + ' file(s) are not JPEG.');
-        input.value = '';
-        updatePickerUI();
-        updateProcessButton();
-        return;
-    }
+    // Exclude non-JPEG files rather than blocking the whole selection.
+    // A thermal camera's output folder routinely holds a JPEG plus one or
+    // more non-JPEG siblings per capture (e.g. a .TIFF export and a raw
+    // radiometric .irg sidecar) — those aren't photos the pipeline can use
+    // (ODM needs JPEGs with embedded GPS EXIF), but they're not a mistake
+    // either, so selecting the whole mission folder should just work.
+    var nonJpeg = rawFiles.filter(function(f) { return !isJpegFilename(f.name); });
+    var files = rawFiles.filter(function(f) { return isJpegFilename(f.name); });
+    selectedPhotoFiles = files;
 
     var limit = getEffectiveLimit();
     if (files.length > limit) {
-        var msg = 'Maximum ' + limit + ' photos per job. You selected ' + files.length + '.';
+        var msg = 'Maximum ' + limit + ' photos per job. You selected ' + files.length + ' JPEG photo(s).';
         if (limit === MAX_PHOTOS_DEFAULT) {
             msg += ' Enable high-capacity mode to allow up to ' + MAX_PHOTOS_HIGH + '.';
         }
         showFlash('flash-upload', msg);
         input.value = '';
+        selectedPhotoFiles = [];
         updatePickerUI();
         updateProcessButton();
+        hideCameraGroupsUI();
         return;
+    }
+
+    if (files.length === 0) {
+        if (nonJpeg.length) {
+            showFlash('flash-upload',
+                'None of the ' + nonJpeg.length + ' selected file(s) are JPEG photos. ' +
+                'Only .jpg/.jpeg files are used.');
+        }
+        input.value = '';
+        updatePickerUI();
+        updateProcessButton();
+        hideCameraGroupsUI();
+        return;
+    }
+
+    if (nonJpeg.length) {
+        showFlash('flash-upload',
+            files.length + ' JPEG photo(s) selected. ' + nonJpeg.length +
+            ' non-JPEG file(s) (e.g. .TIFF, .irg) were not included.', 'info');
     }
 
     updatePickerUI();
     updateProcessButton();
 
     // v0.8.3: Analyze photos and draw flight path map
-    if (files.length > 0) {
-        analyzePhotos(files).then(function() {
-            // Show flight path map if we have GPS points
-            var hasGps = photoAnalysis.points.some(function(p) { return p.lat != null && p.lon != null; });
-            if (hasGps) {
-                document.getElementById('flight-path-container').style.display = '';
-                drawFlightPathMap('flight-path-map', photoAnalysis.points);
-            } else {
-                document.getElementById('flight-path-container').style.display = 'none';
-            }
-
-            // Update camera count in picker
-            var cameraCount = photoAnalysis.groups.length;
-            var cameraEl = document.getElementById('picker-cameras');
-            if (cameraEl) {
-                cameraEl.textContent = cameraCount + ' CAMERA' + (cameraCount > 1 ? 'S' : '') + ' · JPEG';
-            }
-
-            // Update GPS count
-            var gpsCount = photoAnalysis.points.filter(function(p) { return p.lat != null && p.lon != null; }).length;
-            var totalCount = photoAnalysis.points.length;
-            var gpsEl = document.getElementById('picker-gps');
-            if (gpsEl) {
-                if (gpsCount === totalCount) {
-                    gpsEl.textContent = 'GPS OK · ' + gpsCount + ' / ' + totalCount;
-                    gpsEl.className = 'photo-picker__stat photo-picker__gps-ok';
-                } else {
-                    gpsEl.textContent = 'GPS OK · ' + gpsCount + ' / ' + totalCount;
-                    gpsEl.className = 'photo-picker__stat photo-picker__gps-bad';
-                }
-            }
-        }).catch(function() {
-            // Analysis failed — hide map
+    analyzePhotos(files).then(function() {
+        // Show flight path map if we have GPS points
+        var hasGps = photoAnalysis.points.some(function(p) { return p.lat != null && p.lon != null; });
+        if (hasGps) {
+            document.getElementById('flight-path-container').style.display = '';
+            drawFlightPathMap('flight-path-map', photoAnalysis.points);
+        } else {
             document.getElementById('flight-path-container').style.display = 'none';
-        });
-    } else {
+        }
+
+        // Update camera count in picker
+        var cameraCount = photoAnalysis.groups.length;
+        var cameraEl = document.getElementById('picker-cameras');
+        if (cameraEl) {
+            cameraEl.textContent = cameraCount + ' CAMERA' + (cameraCount > 1 ? 'S' : '') + ' · JPEG';
+        }
+
+        // Update GPS count
+        var gpsCount = photoAnalysis.points.filter(function(p) { return p.lat != null && p.lon != null; }).length;
+        var totalCount = photoAnalysis.points.length;
+        var gpsEl = document.getElementById('picker-gps');
+        if (gpsEl) {
+            if (gpsCount === totalCount) {
+                gpsEl.textContent = 'GPS OK · ' + gpsCount + ' / ' + totalCount;
+                gpsEl.className = 'photo-picker__stat photo-picker__gps-ok';
+            } else {
+                gpsEl.textContent = 'GPS OK · ' + gpsCount + ' / ' + totalCount;
+                gpsEl.className = 'photo-picker__stat photo-picker__gps-bad';
+            }
+        }
+
+        // v0.8.5: multiple camera groups — show the selection panel so the
+        // operator picks which group(s) to process. A single group (the
+        // common case) needs no extra step (requirement: don't show this
+        // for a single-camera selection).
+        if (photoAnalysis.groups.length > 1) {
+            renderCameraGroupsUI();
+        } else {
+            hideCameraGroupsUI();
+        }
+        updateProcessButton();
+    }).catch(function() {
+        // Analysis failed — hide map
         document.getElementById('flight-path-container').style.display = 'none';
-    }
+    });
 }
 
 function updatePickerUI() {
-    var input     = document.getElementById('photo-input');
     var picker   = document.getElementById('photo-picker');
     var icon      = document.getElementById('picker-icon');
     var primary   = document.getElementById('picker-primary');
     var secondary = document.getElementById('picker-secondary');
     var stats     = document.getElementById('picker-stats');
-    var n         = (input.files || []).length;
+    var n         = selectedPhotoFiles.length;
     var limit     = getEffectiveLimit();
 
     if (n > 0) {
@@ -2858,8 +2996,8 @@ function updatePickerUI() {
 
         // Calculate total size
         var totalBytes = 0;
-        for (var i = 0; i < input.files.length; i++) {
-            totalBytes += input.files[i].size;
+        for (var i = 0; i < selectedPhotoFiles.length; i++) {
+            totalBytes += selectedPhotoFiles[i].size;
         }
         document.getElementById('picker-size').textContent = formatSize(totalBytes);
         document.getElementById('picker-limit').textContent = 'CLICK TO CHANGE · MAX ' + limit;
@@ -2879,54 +3017,163 @@ function updatePickerUI() {
 
 function updateProcessButton() {
     var name  = document.getElementById('incident-name').value.trim();
-    var files = (document.getElementById('photo-input').files || []).length;
-    document.getElementById('process-btn').disabled = !(name && files > 0);
+    var files = selectedPhotoFiles.length;
+    // When multiple camera groups are detected, at least one must be
+    // checked in the picker before PROCESS is enabled — never silently
+    // fall back to "all" or "largest."
+    var groupsOk = photoAnalysis.groups.length <= 1 || getSelectedGroupKeys().length > 0;
+    document.getElementById('process-btn').disabled = !(name && files > 0 && groupsOk);
 }
 
 // ── Submit ─────────────────────────────────────────────────────────
+
+// Uploads one job's worth of files — the full selection for a plain
+// single-camera job, or one camera group's subset when the operator
+// selected multiple groups — and waits for it to reach a terminal state.
+// Always resolves (never rejects) with {status, data}: status is
+// 'completed'/'failed'/'cancelled', and an upload-level failure (network
+// error, bad response, non-2xx) resolves with status:'failed' too, so
+// callers only need one branch regardless of where the failure happened.
+async function runOneJob(filesForJob, pointsForJob, jobName, groupLabel) {
+    resetPhaseTrackUI();
+    var prepareSeg = document.querySelector('.phase-seg[data-phase="prepare"]');
+    if (prepareSeg) prepareSeg.classList.add('active');
+
+    // ── Client-side resize (v0.8.2) ──────────────────────────
+    var target = document.getElementById('quality-mode-toggle').checked
+        ? RESIZE_TARGET_HIGH_RES
+        : RESIZE_TARGET_STANDARD;
+
+    var usedClientResize = false;
+    var resizeInfo = null;
+    var canResize = typeof Worker !== 'undefined' &&
+                    typeof OffscreenCanvas !== 'undefined' &&
+                    typeof createImageBitmap !== 'undefined';
+
+    if (canResize) {
+        try {
+            resizeInfo = await resizeAllFiles(filesForJob, target, function(completed, total) {
+                var pct = Math.round(completed / total * 100);
+                setUploadProgress(pct);
+            });
+            usedClientResize = true; // still send resized ones; server verifies dimensions
+        } catch (err) {
+            usedClientResize = false;
+        }
+    }
+
+    // Build FormData
+    var fd = new FormData();
+    fd.append('incident_name', jobName);
+    fd.append('tz_offset', new Date().getTimezoneOffset());
+    fd.append('high_capacity', isHighCapacityActive() ? 'true' : 'false');
+    fd.append('retain_task', document.getElementById('retain-task-toggle').checked ? 'true' : 'false');
+    fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
+    fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
+    fd.append('client_resized', usedClientResize ? 'true' : 'false');
+
+    if (pointsForJob.length > 0) {
+        fd.append('photo_points', JSON.stringify(pointsForJob));
+    }
+
+    if (usedClientResize && resizeInfo && resizeInfo.results.length > 0) {
+        for (var i = 0; i < resizeInfo.results.length; i++) {
+            var r = resizeInfo.results[i];
+            fd.append('images[]', r.blob, r.fileName);
+        }
+    } else {
+        for (var j = 0; j < filesForJob.length; j++) {
+            fd.append('images[]', filesForJob[j]);
+        }
+    }
+
+    if (usedClientResize && resizeInfo) {
+        var origMB = (resizeInfo.totalOriginalBytes / 1024 / 1024).toFixed(1);
+        var resizedMB = (resizeInfo.totalResizedBytes / 1024 / 1024).toFixed(1);
+        var statEl = document.getElementById('stat-resized');
+        if (statEl) statEl.textContent = origMB + ' MB → ' + resizedMB + ' MB';
+    }
+
+    showProcessPhase({ name: jobName, photoCount: filesForJob.length, groupLabel: groupLabel });
+
+    var prepareSeg2 = document.querySelector('.phase-seg[data-phase="prepare"]');
+    var uploadSeg = document.querySelector('.phase-seg[data-phase="upload"]');
+    if (prepareSeg2) { prepareSeg2.classList.remove('active'); prepareSeg2.classList.add('done'); }
+    if (uploadSeg) uploadSeg.classList.add('active');
+
+    return new Promise(function(resolve) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/plugins/tak_incident_overlay/upload/');
+        xhr.upload.addEventListener('progress', function(e) {
+            if (e.lengthComputable) setUploadProgress(Math.round(e.loaded / e.total * 100));
+        });
+        xhr.addEventListener('load', function() {
+            try {
+                var data = JSON.parse(xhr.responseText);
+                if (xhr.status >= 200 && xhr.status < 300 && data.ok) {
+                    activeJobId = data.job_id;
+                    onJobTerminal = function(status, termData) {
+                        onJobTerminal = null;
+                        resolve({ status: status, data: termData });
+                    };
+                    startPolling();
+                } else {
+                    showStatusError();
+                    showFlash('flash-status', data.error || 'Upload failed. Please try again.');
+                    resolve({ status: 'failed', data: { error: data.error || 'Upload failed.' } });
+                }
+            } catch (e) {
+                showStatusError();
+                showFlash('flash-status', 'Server returned an unexpected response.');
+                resolve({ status: 'failed', data: { error: 'Server returned an unexpected response.' } });
+            }
+        });
+        xhr.addEventListener('error', function() {
+            showStatusError();
+            showFlash('flash-status', 'Network error during upload.');
+            resolve({ status: 'failed', data: { error: 'Network error during upload.' } });
+        });
+
+        var csrf = getCookie('csrftoken');
+        if (csrf) xhr.setRequestHeader('X-CSRFToken', csrf);
+        xhr.send(fd);
+    });
+}
 
 async function onProcessClick() {
     hideFlash('flash-upload');
     hideFlash('flash-status');
 
-    var name  = document.getElementById('incident-name').value.trim();
-    var files = document.getElementById('photo-input').files || [];
+    var name = document.getElementById('incident-name').value.trim();
 
     if (!name) { showFlash('flash-upload', 'Please enter a location of incident.'); return; }
-    if (!files.length) { showFlash('flash-upload', 'Please select at least one photo.'); return; }
+    if (!selectedPhotoFiles.length) { showFlash('flash-upload', 'Please select at least one photo.'); return; }
+
+    var fileArray = selectedPhotoFiles.slice();
+
+    // photoAnalysis is normally already current for this exact selection
+    // (onFilesSelected re-runs it on every change); re-run only if that's
+    // somehow out of sync rather than trust stale group/GPS data.
+    if (photoAnalysis.points.length !== fileArray.length) {
+        try { await analyzePhotos(fileArray); } catch (err) { /* continue without it */ }
+    }
+
+    // ── Camera group selection (v0.8.5) ──────────────────────
+    // Never auto-picks a group. updateProcessButton() already keeps
+    // PROCESS disabled until at least one group is checked when multiple
+    // are detected — this is the final guard before anything uploads.
+    var activeGroupKeys = null; // null = not applicable (single-group selection)
+    if (photoAnalysis.mixedCameras) {
+        activeGroupKeys = getSelectedGroupKeys();
+        if (activeGroupKeys.length === 0) {
+            showFlash('flash-upload', 'Select at least one camera group to process.');
+            return;
+        }
+    }
 
     setFormLocked(true);
     showUploadPhase();
-
-    var fileArray = Array.prototype.slice.call(files);
-
-    // ── Photo analysis (v0.8.3) ─────────────────────────────
-    // Read EXIF data from each photo to detect mixed cameras,
-    // flag photos without GPS, and build the flight path map.
     setUploadProgress(0);
-    var prepareSeg = document.querySelector('.phase-seg[data-phase="prepare"]');
-    if (prepareSeg) prepareSeg.classList.add('active');
-
-    try {
-        await analyzePhotos(fileArray);
-    } catch(err) {
-        // Analysis failed — continue without it
-    }
-
-    // Check for mixed cameras — prompt operator
-    if (photoAnalysis.mixedCameras) {
-        var keep = confirmMixedCameras();
-        if (!keep) {
-            resetToIdle();
-            return;
-        }
-        fileArray = filterToLargestCameraGroup(fileArray);
-        if (fileArray.length === 0) {
-            showFlash('flash-upload', 'All photos were removed. Please select photos from a single camera.');
-            resetToIdle();
-            return;
-        }
-    }
 
     // Check for duplicate file names (e.g. DJI_0001.JPG from two SD cards).
     // Not fatal — the server prefixes each saved file with its upload index
@@ -2986,113 +3233,45 @@ async function onProcessClick() {
         }
     }
 
-    // ── Client-side resize (v0.8.2) ──────────────────────────
-    // Determine the target size based on quality mode
-    var target = document.getElementById('quality-mode-toggle').checked
-        ? RESIZE_TARGET_HIGH_RES
-        : RESIZE_TARGET_STANDARD;
-
-    var usedClientResize = false;
-    var resizeInfo = null;
-
-    // Check if browser supports client-side resize
-    var canResize = typeof Worker !== 'undefined' &&
-                    typeof OffscreenCanvas !== 'undefined' &&
-                    typeof createImageBitmap !== 'undefined';
-
-    if (canResize) {
-        try {
-            resizeInfo = await resizeAllFiles(fileArray, target, function(completed, total) {
-                var pct = Math.round(completed / total * 100);
-                setUploadProgress(pct);
-            });
-
-            // Check if all files were successfully resized
-            if (resizeInfo.errors.length === 0) {
-                usedClientResize = true;
-            } else {
-                // Some files failed — use originals for those
-                usedClientResize = true; // Still send resized ones; server checks dimensions
-            }
-        } catch(err) {
-            // Client resize failed entirely — fall back to originals
-            usedClientResize = false;
-        }
-    }
-
-    // Build FormData with (possibly resized) files
-    var fd = new FormData();
-    fd.append('incident_name', name);
-    fd.append('tz_offset', new Date().getTimezoneOffset());
-    fd.append('high_capacity', isHighCapacityActive() ? 'true' : 'false');
-    fd.append('retain_task', document.getElementById('retain-task-toggle').checked ? 'true' : 'false');
-    fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
-    fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
-    fd.append('client_resized', usedClientResize ? 'true' : 'false');
-
-    // v0.8.3: Send photo points for the sidecar file
-    if (photoAnalysis.points.length > 0) {
-        fd.append('photo_points', JSON.stringify(photoAnalysis.points));
-    }
-
-    // Use resized blobs if available, otherwise originals
-    if (usedClientResize && resizeInfo && resizeInfo.results.length > 0) {
-        for (var i = 0; i < resizeInfo.results.length; i++) {
-            var r = resizeInfo.results[i];
-            fd.append('images[]', r.blob, r.fileName);
-        }
-    } else {
-        for (var i = 0; i < fileArray.length; i++) {
-            fd.append('images[]', fileArray[i]);
-        }
-    }
-
-    // Update resize stat display
-    if (usedClientResize && resizeInfo) {
-        var origMB = (resizeInfo.totalOriginalBytes / 1024 / 1024).toFixed(1);
-        var resizedMB = (resizeInfo.totalResizedBytes / 1024 / 1024).toFixed(1);
-        var statEl = document.getElementById('stat-resized');
-        if (statEl) statEl.textContent = origMB + ' MB → ' + resizedMB + ' MB';
-    }
-
-    // Mark prepare and upload phases
-    var prepareSeg2 = document.querySelector('.phase-seg[data-phase="prepare"]');
-    var uploadSeg = document.querySelector('.phase-seg[data-phase="upload"]');
-    if (prepareSeg2) { prepareSeg2.classList.remove('active'); prepareSeg2.classList.add('done'); }
-    if (uploadSeg) uploadSeg.classList.add('active');
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', '/plugins/tak_incident_overlay/upload/');
-    xhr.upload.addEventListener('progress', function(e) {
-        if (e.lengthComputable) setUploadProgress(Math.round(e.loaded / e.total * 100));
-    });
-    xhr.addEventListener('load', function() {
-        try {
-            var data = JSON.parse(xhr.responseText);
-            if (xhr.status >= 200 && xhr.status < 300 && data.ok) {
-                activeJobId = data.job_id;
-                showProcessPhase();
-                startPolling();
-            } else {
-                showStatusError();
-                showFlash('flash-status', data.error || 'Upload failed. Please try again.');
-                resetToIdle();
-            }
-        } catch (e) {
-            showStatusError();
-            showFlash('flash-status', 'Server returned an unexpected response.');
-            resetToIdle();
-        }
-    });
-    xhr.addEventListener('error', function() {
-        showStatusError();
-        showFlash('flash-status', 'Network error during upload.');
+    // ── Single camera group — exactly the original one-job flow ──────
+    if (!photoAnalysis.mixedCameras) {
+        var result = await runOneJob(fileArray, photoAnalysis.points, name, null);
+        onJobTerminal = null;
         resetToIdle();
-    });
+        if (result.status === 'completed') loadArchive();
+        return;
+    }
 
-    var csrf = getCookie('csrftoken');
-    if (csrf) xhr.setRequestHeader('X-CSRFToken', csrf);
-    xhr.send(fd);
+    // ── Multiple groups — one job per group the operator selected ─────
+    // (requirement: create separate WebODM tasks per camera group rather
+    // than mixing incompatible imagery into one; never process a group
+    // the operator didn't check).
+    var groupsToRun = photoAnalysis.groups.filter(function(g) {
+        return activeGroupKeys.indexOf(g.key) !== -1;
+    });
+    var summary = [];
+    for (var gi = 0; gi < groupsToRun.length; gi++) {
+        var group = groupsToRun[gi];
+        var split = filterToGroup(fileArray, group.key);
+        if (split.files.length === 0) continue; // GPS filter removed this group entirely
+
+        var jobName = name + ' [' + (group.camera || (group.width + '×' + group.height)) + ']';
+        var groupLabel = 'JOB ' + (gi + 1) + ' OF ' + groupsToRun.length;
+
+        var jobResult = await runOneJob(split.files, split.points, jobName, groupLabel);
+        summary.push({ name: jobName, status: jobResult.status });
+    }
+
+    resetToIdle();
+    loadArchive();
+
+    var okCount = summary.filter(function(s) { return s.status === 'completed'; }).length;
+    if (okCount < summary.length) {
+        var failedNames = summary.filter(function(s) { return s.status !== 'completed'; })
+                                  .map(function(s) { return s.name; });
+        showFlash('flash-status',
+            okCount + ' of ' + summary.length + ' group jobs completed. Did not complete: ' + failedNames.join(', '));
+    }
 }
 
 // ── Node status ────────────────────────────────────────────────────
@@ -3198,17 +3377,29 @@ function pollStatus() {
                 if (data.quality_warning) {
                     showFlash('flash-status', data.quality_warning);
                 }
-                resetToIdle();
-                loadArchive();
+                if (onJobTerminal) {
+                    onJobTerminal('completed', data);
+                } else {
+                    resetToIdle();
+                    loadArchive();
+                }
             } else if (data.status === 'failed') {
                 stopPolling();
                 showStatusError();
                 showFlash('flash-status',
                     data.error || 'Processing failed — try again and check logs.');
-                resetToIdle();
+                if (onJobTerminal) {
+                    onJobTerminal('failed', data);
+                } else {
+                    resetToIdle();
+                }
             } else if (data.status === 'cancelled') {
                 stopPolling();
-                resetToIdle();
+                if (onJobTerminal) {
+                    onJobTerminal('cancelled', data);
+                } else {
+                    resetToIdle();
+                }
             }
         })
         .catch(function() {});
@@ -3527,7 +3718,15 @@ function showUploadPhase() {
     document.getElementById('terrain-warning').style.display = 'none';
 }
 
-function showProcessPhase() {
+// opts is optional: {name, photoCount, groupLabel}. Falls back to reading
+// the form's current incident-name/photo-input when omitted (the plain
+// single-job path). The mixed-camera auto-split flow in onProcessClick
+// passes these explicitly per group, since by that point the name needs
+// its per-group suffix and photoCount is that group's subset, not the
+// full original selection — and groupLabel ("JOB 1 OF 2") tells the
+// operator a batch is in progress.
+function showProcessPhase(opts) {
+    opts = opts || {};
     document.getElementById('form-view').style.display = 'none';
     document.getElementById('running-view').style.display = '';
 
@@ -3536,17 +3735,18 @@ function showProcessPhase() {
     document.getElementById('terrain-warning').style.display = terrainOn ? '' : 'none';
 
     // Set job name
-    var name = document.getElementById('incident-name').value.trim();
+    var name = opts.name != null ? opts.name : document.getElementById('incident-name').value.trim();
     document.getElementById('running-job-name').textContent = name;
 
     // Set sub-line
-    var files = document.getElementById('photo-input').files || [];
-    var n = files.length;
+    var n = opts.photoCount != null ? opts.photoCount : (document.getElementById('photo-input').files || []).length;
     var modes = [];
     if (document.getElementById('quality-mode-toggle').checked) modes.push('HIGH-RESOLUTION');
     if (document.getElementById('terrain-correction-toggle').checked) modes.push('TERRAIN CORRECTION');
     var modeStr = modes.length ? modes.join(' + ') : 'STANDARD';
-    document.getElementById('running-job-sub').textContent = n + ' PHOTOS · ' + modeStr + ' · ' + (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * settings.threadPercent / 100)) : '—') + ' THREADS';
+    var subLine = n + ' PHOTOS · ' + modeStr + ' · ' + (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * settings.threadPercent / 100)) : '—') + ' THREADS';
+    if (opts.groupLabel) subLine = opts.groupLabel + ' · ' + subLine;
+    document.getElementById('running-job-sub').textContent = subLine;
 
     // Start elapsed timer
     jobStartTime = Date.now();
@@ -3576,12 +3776,23 @@ function resetToIdle() {
     document.getElementById('terrain-warning').style.display = 'none';
     document.getElementById('photo-input').value = '';
     document.getElementById('incident-name').value = '';
+    selectedPhotoFiles = [];
+    hideCameraGroupsUI();
     updatePickerUI();
     updateProcessButton();
     activeJobId = null;
     jobStartTime = null;
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
-    // Reset phase track
+    resetPhaseTrackUI();
+}
+
+// Clears all done/active state from the phase track and zeroes the
+// progress bar. Called once per job: by resetToIdle() when a whole
+// submission (single job, or the full mixed-camera batch) is done, and at
+// the start of each job in runOneJob() so a multi-group batch's phase
+// track starts fresh for every group instead of carrying over the
+// previous group's done/active state.
+function resetPhaseTrackUI() {
     PHASE_ORDER.forEach(function(phase) {
         var seg = document.querySelector('.phase-seg[data-phase="' + phase + '"]');
         var lbl = document.querySelector('.phase-label[data-phase="' + phase + '"]');
@@ -3641,11 +3852,13 @@ function formatSize(bytes) {
     return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
-function showFlash(id, msg) {
+function showFlash(id, msg, kind) {
     var el = document.getElementById(id);
     el.innerHTML =
         '<button class="flash__close" onclick="hideFlash(\'' + id + '\')" aria-label="Dismiss">&times;</button>' +
         esc(msg);
+    el.classList.remove('flash--error', 'flash--info');
+    el.classList.add(kind === 'info' ? 'flash--info' : 'flash--error');
     el.style.display = 'block';
 }
 
