@@ -181,6 +181,20 @@ def upload_view(request):
     # photo exceeds the target.
     client_resized = request.POST.get('client_resized', 'false').lower() == 'true'
 
+    # ── Parse photo points (v0.8.3) ────────────────────────────
+    # The browser sends a list of {name, lat, lon, time} dicts read
+    # from photo EXIF during the prepare phase. Saved to a sidecar
+    # file for the photo map (Workstream E).
+    photo_points = []
+    try:
+        import json as _json
+        points_raw = request.POST.get('photo_points', '[]')
+        photo_points = _json.loads(points_raw)
+        if not isinstance(photo_points, list):
+            photo_points = []
+    except Exception:
+        photo_points = []
+
     # ── Validate photo list ────────────────────────────────────
     images = request.FILES.getlist('images[]')
     if not images:
@@ -222,6 +236,13 @@ def upload_view(request):
     except Exception as e:
         log.exception('TAK Overlay: failed to create job record: %s', e)
         return _err('Failed to create job record. Please try again.')
+
+    # ── Save photo points sidecar (v0.8.3) ─────────────────────
+    if photo_points:
+        try:
+            archive.save_photos_sidecar(job_id, photo_points)
+        except Exception as e:
+            log.warning('TAK Overlay: could not save photo points: %s', e)
 
     # ── Determine resize target (v0.8.2) ──────────────────────
     # The browser sends client_resized=true when it has already resized
@@ -381,6 +402,9 @@ def status_view(request, job_id):
         except Exception as e:
             log.debug('TAK Overlay: status_view could not read task progress: %s', e)
 
+    # v0.8.3: Include photo points from sidecar file
+    photo_points = archive.read_photos_sidecar(job_id)
+
     return _ok(
         job_id=          job['job_id'],
         status=          job['status'],
@@ -389,6 +413,7 @@ def status_view(request, job_id):
         webodm_progress= webodm_progress,
         webodm_stage=    webodm_stage,
         file_size_bytes= job.get('file_size_bytes'),
+        photo_points=    photo_points,
         error=           job.get('error'),
     )
 

@@ -7,6 +7,24 @@ loose.
 
 ---
 
+## [0.8.3] — 2026-09-30
+
+### Added
+- **Mixed-camera detection** (Workstream B). While preparing photos, the browser reads each photo's pixel size and camera model from EXIF. If there is more than one group, the operator is prompted to keep the largest group or cancel.
+- **GPS pre-check** (Workstream B). Photos without GPS EXIF are flagged in seconds, not after upload. The operator can remove them before submitting.
+- **Duplicate file detection** (Workstream B). Duplicate file names within a selection are flagged.
+- **Flight path preview** (Workstream E, part 1). An overhead map of the flight path drawn from photo GPS metadata. Each photo is a dot on the path, joined by a line. Shown before upload so the operator can check coverage.
+- **Photo sidecar file** (`<archive_dir>/<job_id>_photos.json`). The point list is saved next to the output, not in `index.json`. Purged with the job at retention time.
+- **Photo points in status API**. `status_view` returns the photo points from the sidecar file.
+- **Minimal EXIF parser** in the browser. Reads GPS lat/lon, DateTimeOriginal, camera model, and dimensions from JPEG files. No external libraries.
+
+### Changed
+- **api.py** accepts `photo_points` on upload and saves them to the sidecar file.
+- **archive.py** has `save_photos_sidecar()`, `read_photos_sidecar()`, and `delete_photos_sidecar()` functions. Sidecar files are cleaned up on job delete and purge.
+- **Photo picker UI** shows camera count and GPS status (e.g., "GPS OK · 88 / 88" or "GPS OK · 45 / 88" in red).
+
+---
+
 ## [0.8.2] — 2026-09-30
 
 ### Added

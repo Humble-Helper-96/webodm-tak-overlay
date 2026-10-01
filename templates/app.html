@@ -705,6 +705,12 @@
                     </div>
                 </div>
 
+                <!-- Flight path map (v0.8.3) -->
+                <div class="field-row" id="flight-path-container" style="display:none;">
+                    <label class="field-label">FLIGHT PATH</label>
+                    <div id="flight-path-map"></div>
+                </div>
+
                 <!-- Options -->
                 <div class="field-row">
                     <label class="field-label">OPTIONS</label>
@@ -1064,6 +1070,414 @@ var resizeResults = [];       // {file, blob, originalSize, resizedSize, used}
 var resizeErrors = [];        // files that failed client resize
 var totalOriginalBytes = 0;
 var totalResizedBytes = 0;
+
+// ── Photo analysis state (v0.8.3) ─────────────────────────────
+var photoAnalysis = {
+    points: [],       // {name, lat, lon, time, width, height, camera}
+    groups: [],       // camera groups [{width, height, count, camera}]
+    noGps: [],        // files without GPS
+    duplicates: [],   // duplicate files
+    mixedCameras: false
+};
+
+// ── Minimal EXIF parser (v0.8.3) ──────────────────────────────
+// Reads GPS lat/lon, DateTimeOriginal, camera model, and dimensions
+// from a JPEG file. No external libraries.
+
+function readExifData(arrayBuffer) {
+    var result = { lat: null, lon: null, time: null, camera: null, width: 0, height: 0 };
+    var bytes = new Uint8Array(arrayBuffer);
+    var view = new DataView(arrayBuffer);
+
+    // Check JPEG SOI
+    if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return result;
+
+    // Parse segments to find EXIF (APP1 marker FFE1)
+    var offset = 2;
+    while (offset < bytes.length - 3) {
+        if (bytes[offset] !== 0xFF) { offset++; continue; }
+        var marker = bytes[offset + 1];
+
+        if (marker === 0xE1) {
+            // APP1 — EXIF
+            var length = (bytes[offset + 2] << 8) | bytes[offset + 3];
+            var app1Start = offset + 4;
+            // Check for "Exif\0\0" header
+            if (bytes[app1Start] === 0x45 && bytes[app1Start + 1] === 0x78 &&
+                bytes[app1Start + 2] === 0x69 && bytes[app1Start + 3] === 0x66) {
+                var tiffStart = app1Start + 6;
+                result = parseTiffHeader(bytes, view, tiffStart);
+                return result;
+            }
+            offset += 2 + length;
+        } else if (marker === 0xDA) {
+            // SOS — start of scan, stop
+            break;
+        } else if (marker === 0xD9) {
+            // EOI
+            break;
+        } else {
+            // Other segments — skip
+            if (offset + 3 < bytes.length) {
+                var len = (bytes[offset + 2] << 8) | bytes[offset + 3];
+                offset += 2 + len;
+            } else {
+                offset++;
+            }
+        }
+    }
+    return result;
+}
+
+function parseTiffHeader(bytes, view, tiffStart) {
+    var result = { lat: null, lon: null, time: null, camera: null, width: 0, height: 0 };
+
+    // Check byte order
+    var littleEndian = bytes[tiffStart] === 0x49 && bytes[tiffStart + 1] === 0x49;
+    var read16 = function(pos) {
+        return littleEndian ? view.getUint16(pos, true) : view.getUint16(pos, false);
+    };
+    var read32 = function(pos) {
+        return littleEndian ? view.getUint32(pos, true) : view.getUint32(pos, false);
+    };
+
+    // IFD offset
+    var ifdOffset = read32(tiffStart + 4);
+    var ifdPos = tiffStart + ifdOffset;
+
+    // Number of entries
+    var numEntries = read16(ifdPos);
+    ifdPos += 2;
+
+    var gpsIfdOffset = null;
+    var exifIfdOffset = null;
+
+    for (var i = 0; i < numEntries; i++) {
+        var entryPos = ifdPos + i * 12;
+        var tag = read16(entryPos);
+        var type = read16(entryPos + 2);
+        var count = read32(entryPos + 4);
+        var valuePos = entryPos + 8;
+
+        // GPS IFD pointer (0x8825)
+        if (tag === 0x8825) {
+            gpsIfdOffset = read32(valuePos);
+        }
+        // Exif IFD pointer (0x8769)
+        if (tag === 0x8769) {
+            exifIfdOffset = read32(valuePos);
+        }
+        // Image width (0x0100) — in Exif IFD
+        // Image height (0x0101)
+        // Make (0x010F), Model (0x0110)
+        // DateTimeOriginal (0x9003) — in Exif IFD
+    }
+
+    // Parse GPS IFD
+    if (gpsIfdOffset !== null) {
+        var gpsPos = tiffStart + gpsIfdOffset;
+        var gpsEntries = read16(gpsPos);
+        gpsPos += 2;
+        for (var i = 0; i < gpsEntries; i++) {
+            var entryPos = gpsPos + i * 12;
+            var tag = read16(entryPos);
+            var type = read16(entryPos + 2);
+            var count = read32(entryPos + 4);
+            var valuePos = entryPos + 8;
+
+            if (tag === 0x0001) {
+                // GPSLatitudeRef
+                result.latRef = readAscii(bytes, valuePos, count);
+            }
+            if (tag === 0x0002) {
+                // GPSLatitude (3 rationals)
+                result.lat = readRationalDegrees(bytes, view, tiffStart, valuePos, littleEndian);
+            }
+            if (tag === 0x0003) {
+                // GPSLongitudeRef
+                result.lonRef = readAscii(bytes, valuePos, count);
+            }
+            if (tag === 0x0004) {
+                // GPSLongitude
+                result.lon = readRationalDegrees(bytes, view, tiffStart, valuePos, littleEndian);
+            }
+        }
+    }
+
+    // Parse Exif IFD for DateTimeOriginal, Make, Model, dimensions
+    if (exifIfdOffset !== null) {
+        var exifPos = tiffStart + exifIfdOffset;
+        var exifEntries = read16(exifPos);
+        exifPos += 2;
+        for (var i = 0; i < exifEntries; i++) {
+            var entryPos = exifPos + i * 12;
+            var tag = read16(entryPos);
+            var type = read16(entryPos + 2);
+            var count = read32(entryPos + 4);
+            var valuePos = entryPos + 8;
+
+            if (tag === 0x9003) {
+                // DateTimeOriginal
+                result.time = readAscii(bytes, valuePos, count);
+            }
+            if (tag === 0xA002) {
+                // PixelXDimension (width)
+                result.width = read32(valuePos);
+            }
+            if (tag === 0xA003) {
+                // PixelYDimension (height)
+                result.height = read32(valuePos);
+            }
+        }
+    }
+
+    // Also read Make/Model from main IFD
+    var ifdPos2 = tiffStart + ifdOffset;
+    var numEntries2 = read16(ifdPos2);
+    ifdPos2 += 2;
+    for (var i = 0; i < numEntries2; i++) {
+        var entryPos = ifdPos2 + i * 12;
+        var tag = read16(entryPos);
+        var type = read16(entryPos + 2);
+        var count = read32(entryPos + 4);
+        var valuePos = entryPos + 8;
+
+        if (tag === 0x010F) {
+            result.make = readAscii(bytes, valuePos, count);
+        }
+        if (tag === 0x0110) {
+            result.model = readAscii(bytes, valuePos, count);
+        }
+        if (tag === 0x0100) {
+            result.width = read32(valuePos);
+        }
+        if (tag === 0x0101) {
+            result.height = read32(valuePos);
+        }
+    }
+
+    // Build camera string
+    if (result.make || result.model) {
+        result.camera = (result.make + ' ' + result.model).trim();
+    }
+
+    return result;
+}
+
+function readAscii(bytes, offset, count) {
+    var str = '';
+    for (var i = 0; i < count && offset + i < bytes.length; i++) {
+        var c = bytes[offset + i];
+        if (c === 0) break;
+        str += String.fromCharCode(c);
+    }
+    return str;
+}
+
+function readRationalDegrees(bytes, view, tiffStart, valuePos, littleEndian) {
+    // GPS coordinates are stored as 3 rationals (degrees, minutes, seconds)
+    var offset = tiffStart + view.getUint32(valuePos, littleEndian);
+    var deg = readRational(bytes, view, offset, littleEndian);
+    var min = readRational(bytes, view, offset + 8, littleEndian);
+    var sec = readRational(bytes, view, offset + 16, littleEndian);
+    return deg + min / 60 + sec / 3600;
+}
+
+function readRational(bytes, view, pos, littleEndian) {
+    var num = view.getUint32(pos, littleEndian);
+    var den = view.getUint32(pos + 4, littleEndian);
+    return den === 0 ? 0 : num / den;
+}
+
+// ── Photo analysis (v0.8.3) ───────────────────────────────────
+
+async function analyzePhotos(files) {
+    photoAnalysis = { points: [], groups: [], noGps: [], duplicates: [], mixedCameras: false };
+    var seen = {};
+    var groupMap = {};
+
+    for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        try {
+            var buffer = await file.arrayBuffer();
+            var exif = readExifData(buffer);
+
+            // Get dimensions from EXIF or fallback
+            var width = exif.width || 0;
+            var height = exif.height || 0;
+
+            // If no EXIF dimensions, try to get from image
+            if (!width || !height) {
+                try {
+                    var bitmap = await createImageBitmap(file);
+                    width = bitmap.width;
+                    height = bitmap.height;
+                    bitmap.close();
+                } catch(e) {}
+            }
+
+            var point = {
+                name: file.name,
+                lat: exif.lat,
+                lon: exif.lon,
+                time: exif.time,
+                width: width,
+                height: height,
+                camera: exif.camera || (width + '×' + height)
+            };
+            photoAnalysis.points.push(point);
+
+            // Group by size and camera
+            var groupKey = width + '×' + height + '|' + (exif.camera || 'unknown');
+            if (!groupMap[groupKey]) {
+                groupMap[groupKey] = { width: width, height: height, count: 0, camera: exif.camera || '' };
+                photoAnalysis.groups.push(groupMap[groupKey]);
+            }
+            groupMap[groupKey].count++;
+
+            // Check GPS
+            if (exif.lat == null || exif.lon == null) {
+                photoAnalysis.noGps.push(file.name);
+            }
+
+            // Check duplicates (by name)
+            if (seen[file.name]) {
+                photoAnalysis.duplicates.push(file.name);
+            }
+            seen[file.name] = true;
+
+        } catch(err) {
+            // If we can't read the file, add it with no data
+            photoAnalysis.points.push({
+                name: file.name, lat: null, lon: null, time: null,
+                width: 0, height: 0, camera: 'unknown'
+            });
+            photoAnalysis.noGps.push(file.name);
+        }
+    }
+
+    // Sort groups by count (largest first)
+    photoAnalysis.groups.sort(function(a, b) { return b.count - a.count; });
+
+    // Mixed cameras = more than one group
+    photoAnalysis.mixedCameras = photoAnalysis.groups.length > 1;
+
+    return photoAnalysis;
+}
+
+// ── Mixed camera prompt (v0.8.3) ─────────────────────────────
+
+function confirmMixedCameras() {
+    var groups = photoAnalysis.groups;
+    if (groups.length <= 1) return true;
+
+    var msg = 'Multiple camera types detected:\n\n';
+    groups.forEach(function(g) {
+        var label = g.camera || (g.width + '×' + g.height);
+        msg += '  ' + g.count + ' photos at ' + label + '\n';
+    });
+    msg += '\nKeep the largest group (' + groups[0].count + ' photos) and remove the rest?';
+
+    return confirm(msg);
+}
+
+// ── Flight path map (v0.8.3, Workstream E part 1) ─────────────
+
+function drawFlightPathMap(containerId, points) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+
+    // Filter points with valid GPS
+    var validPoints = points.filter(function(p) { return p.lat != null && p.lon != null; });
+
+    if (validPoints.length === 0) {
+        container.innerHTML = '<div class="empty-state"><div class="ico">⊘</div><div>No GPS data</div></div>';
+        return;
+    }
+
+    // Sort by time
+    validPoints.sort(function(a, b) {
+        if (!a.time) return -1;
+        if (!b.time) return 1;
+        return a.time.localeCompare(b.time);
+    });
+
+    // Calculate bounds
+    var minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+    validPoints.forEach(function(p) {
+        if (p.lat < minLat) minLat = p.lat;
+        if (p.lat > maxLat) maxLat = p.lat;
+        if (p.lon < minLon) minLon = p.lon;
+        if (p.lon > maxLon) maxLon = p.lon;
+    });
+
+    // Add padding
+    var latPad = (maxLat - minLat) * 0.1 || 0.001;
+    var lonPad = (maxLon - minLon) * 0.1 || 0.001;
+    minLat -= latPad; maxLat += latPad;
+    minLon -= lonPad; maxLon += lonPad;
+
+    // Map dimensions
+    var mapW = 600, mapH = 400;
+    var padding = 30;
+
+    // Equirectangular projection
+    function project(lat, lon) {
+        var x = padding + (lon - minLon) / (maxLon - minLon) * (mapW - 2 * padding);
+        var y = padding + (maxLat - lat) / (maxLat - minLat) * (mapH - 2 * padding);
+        return { x: x, y: y };
+    }
+
+    // Build SVG
+    var svg = '<svg viewBox="0 0 ' + mapW + ' ' + mapH + '" style="width:100%;height:auto;background:var(--bg);border:1px solid var(--border);border-radius:3px;">';
+
+    // Draw flight path line
+    if (validPoints.length > 1) {
+        var pathD = '';
+        validPoints.forEach(function(p, i) {
+            var pt = project(p.lat, p.lon);
+            pathD += (i === 0 ? 'M' : 'L') + pt.x + ',' + pt.y + ' ';
+        });
+        svg += '<path d="' + pathD + '" fill="none" stroke="var(--border-hi)" stroke-width="1"/>';
+    }
+
+    // Draw dots
+    validPoints.forEach(function(p) {
+        var pt = project(p.lat, p.lon);
+        svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="var(--text-dim)" style="cursor:pointer;" onclick="showPointInfo(\'' + esc(p.name) + '\')"/>';
+    });
+
+    // North arrow
+    svg += '<text x="' + (mapW - 20) + '" y="20" fill="var(--text-dim)" font-family="var(--mono)" font-size="10" text-anchor="middle">N</text>';
+    svg += '<line x1="' + (mapW - 20) + '" y1="25" x2="' + (mapW - 20) + '" y2="45" stroke="var(--text-dim)" stroke-width="1"/>';
+    svg += '<polygon points="' + (mapW - 20) + ',20 ' + (mapW - 25) + ',30 ' + (mapW - 15) + ',30" fill="var(--text-dim)"/>';
+
+    // Scale bar
+    var centreLat = (minLat + maxLat) / 2;
+    var metresPerDegLon = 111320 * Math.cos(centreLat * Math.PI / 180);
+    var metresPerDegLat = 110540;
+    var scaleBarMetres = 20; // 20 m in metric, 50 ft in imperial
+    if (settings.units === 'imperial') scaleBarMetres = 15.24; // 50 ft
+    var scaleBarDeg = scaleBarMetres / metresPerDegLon;
+    var scaleBarPx = scaleBarDeg / (maxLon - minLon) * (mapW - 2 * padding);
+    svg += '<line x1="' + padding + '" y1="' + (mapH - 15) + '" x2="' + (padding + scaleBarPx) + '" y2="' + (mapH - 15) + '" stroke="var(--text-dim)" stroke-width="2"/>';
+    svg += '<text x="' + (padding + scaleBarPx / 2) + '" y="' + (mapH - 20) + '" fill="var(--text-dim)" font-family="var(--mono)" font-size="9" text-anchor="middle">' + Units.formatScaleBar(scaleBarPx, scaleBarMetres / scaleBarPx) + '</text>';
+
+    svg += '</svg>';
+
+    // Legend
+    svg += '<div style="display:flex;gap:16px;justify-content:center;margin-top:8px;font-family:var(--mono);font-size:9px;color:var(--text-dim);">';
+    svg += '<span>● ' + validPoints.length + ' PHOTOS</span>';
+    svg += '<span>— FLIGHT PATH</span>';
+    svg += '</div>';
+
+    container.innerHTML = svg;
+}
+
+function showPointInfo(name) {
+    // Could show a tooltip; for now just log
+    console.log('Photo:', name);
+}
 
 // ── Client-side resize Web Worker (v0.8.2) ─────────────────────
 // The worker receives {blob, target, fileName} and returns
@@ -2007,6 +2421,46 @@ function onFilesSelected(input) {
 
     updatePickerUI();
     updateProcessButton();
+
+    // v0.8.3: Analyze photos and draw flight path map
+    if (files.length > 0) {
+        analyzePhotos(files).then(function() {
+            // Show flight path map if we have GPS points
+            var hasGps = photoAnalysis.points.some(function(p) { return p.lat != null && p.lon != null; });
+            if (hasGps) {
+                document.getElementById('flight-path-container').style.display = '';
+                drawFlightPathMap('flight-path-map', photoAnalysis.points);
+            } else {
+                document.getElementById('flight-path-container').style.display = 'none';
+            }
+
+            // Update camera count in picker
+            var cameraCount = photoAnalysis.groups.length;
+            var cameraEl = document.getElementById('picker-cameras');
+            if (cameraEl) {
+                cameraEl.textContent = cameraCount + ' CAMERA' + (cameraCount > 1 ? 'S' : '') + ' · JPEG';
+            }
+
+            // Update GPS count
+            var gpsCount = photoAnalysis.points.filter(function(p) { return p.lat != null && p.lon != null; }).length;
+            var totalCount = photoAnalysis.points.length;
+            var gpsEl = document.getElementById('picker-gps');
+            if (gpsEl) {
+                if (gpsCount === totalCount) {
+                    gpsEl.textContent = 'GPS OK · ' + gpsCount + ' / ' + totalCount;
+                    gpsEl.className = 'photo-picker__stat photo-picker__gps-ok';
+                } else {
+                    gpsEl.textContent = 'GPS OK · ' + gpsCount + ' / ' + totalCount;
+                    gpsEl.className = 'photo-picker__stat photo-picker__gps-bad';
+                }
+            }
+        }).catch(function() {
+            // Analysis failed — hide map
+            document.getElementById('flight-path-container').style.display = 'none';
+        });
+    } else {
+        document.getElementById('flight-path-container').style.display = 'none';
+    }
 }
 
 function updatePickerUI() {
@@ -2068,13 +2522,59 @@ async function onProcessClick() {
     setFormLocked(true);
     showUploadPhase();
 
+    var fileArray = Array.prototype.slice.call(files);
+
+    // ── Photo analysis (v0.8.3) ─────────────────────────────
+    // Read EXIF data from each photo to detect mixed cameras,
+    // flag photos without GPS, and build the flight path map.
+    setUploadProgress(0);
+    var prepareSeg = document.querySelector('.phase-seg[data-phase="prepare"]');
+    if (prepareSeg) prepareSeg.classList.add('active');
+
+    try {
+        await analyzePhotos(fileArray);
+    } catch(err) {
+        // Analysis failed — continue without it
+    }
+
+    // Check for mixed cameras — prompt operator
+    if (photoAnalysis.mixedCameras) {
+        var keep = confirmMixedCameras();
+        if (!keep) {
+            resetToIdle();
+            return;
+        }
+    }
+
+    // Check for photos without GPS
+    if (photoAnalysis.noGps.length > 0) {
+        var proceed = confirm(
+            photoAnalysis.noGps.length + ' photo(s) have no GPS data: ' +
+            photoAnalysis.noGps.slice(0, 3).join(', ') +
+            (photoAnalysis.noGps.length > 3 ? '...' : '') +
+            '\n\nThese photos cannot be used for georeferencing. Remove them and continue?'
+        );
+        if (!proceed) {
+            resetToIdle();
+            return;
+        }
+        // Filter out photos without GPS
+        fileArray = fileArray.filter(function(f) {
+            return photoAnalysis.noGps.indexOf(f.name) === -1;
+        });
+        if (fileArray.length === 0) {
+            showFlash('flash-upload', 'All photos were removed. Please select photos with GPS data.');
+            resetToIdle();
+            return;
+        }
+    }
+
     // ── Client-side resize (v0.8.2) ──────────────────────────
     // Determine the target size based on quality mode
     var target = document.getElementById('quality-mode-toggle').checked
         ? RESIZE_TARGET_HIGH_RES
         : RESIZE_TARGET_STANDARD;
 
-    var fileArray = Array.prototype.slice.call(files);
     var usedClientResize = false;
     var resizeInfo = null;
 
@@ -2084,11 +2584,6 @@ async function onProcessClick() {
                     typeof createImageBitmap !== 'undefined';
 
     if (canResize) {
-        // Show preparing phase
-        setUploadProgress(0);
-        var prepareSeg = document.querySelector('.phase-seg[data-phase="prepare"]');
-        if (prepareSeg) prepareSeg.classList.add('active');
-
         try {
             resizeInfo = await resizeAllFiles(fileArray, target, function(completed, total) {
                 var pct = Math.round(completed / total * 100);
@@ -2117,6 +2612,11 @@ async function onProcessClick() {
     fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
     fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
     fd.append('client_resized', usedClientResize ? 'true' : 'false');
+
+    // v0.8.3: Send photo points for the sidecar file
+    if (photoAnalysis.points.length > 0) {
+        fd.append('photo_points', JSON.stringify(photoAnalysis.points));
+    }
 
     // Use resized blobs if available, otherwise originals
     if (usedClientResize && resizeInfo && resizeInfo.results.length > 0) {

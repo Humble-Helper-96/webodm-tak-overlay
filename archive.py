@@ -299,6 +299,52 @@ def get_thread_percent():
         return 50
 
 
+# ── Photo sidecar file (v0.8.3) ─────────────────────────────────────────────
+
+def get_photos_sidecar_path(job_id):
+    """Return the path to the photo sidecar file for a job."""
+    return os.path.join(get_archive_dir(), '{}_photos.json'.format(job_id))
+
+
+def save_photos_sidecar(job_id, points):
+    """
+    Save the photo point list to a sidecar file next to the output.
+    The sidecar file is <archive_dir>/<job_id>_photos.json.
+    Points is a list of {name, lat, lon, time, used} dicts.
+    """
+    path = get_photos_sidecar_path(job_id)
+    try:
+        with open(path, 'w') as f:
+            json.dump(points, f, indent=2)
+        log.info('TAK Overlay: saved photo sidecar for job %s (%d points)', job_id, len(points))
+    except Exception as e:
+        log.warning('TAK Overlay: could not save photo sidecar for job %s: %s', job_id, e)
+
+
+def read_photos_sidecar(job_id):
+    """
+    Read the photo sidecar file for a job.
+    Returns the list of points, or None if the file doesn't exist.
+    """
+    path = get_photos_sidecar_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        log.warning('TAK Overlay: could not read photo sidecar for job %s: %s', job_id, e)
+        return None
+
+
+def delete_photos_sidecar(job_id):
+    """Delete the photo sidecar file for a job. Safe to call if it doesn't exist."""
+    path = get_photos_sidecar_path(job_id)
+    if os.path.exists(path):
+        os.remove(path)
+        log.info('TAK Overlay: deleted photo sidecar for job %s', job_id)
+
+
 def _sanitize_filename(name):
     """
     Make a string safe to use as a filename.
@@ -551,6 +597,8 @@ def delete_job(job_id):
                 if geotiff and os.path.exists(geotiff):
                     os.remove(geotiff)
                     log.info('TAK Overlay: deleted GeoTIFF for job %s', job_id)
+                # Remove photo sidecar (v0.8.3)
+                delete_photos_sidecar(job_id)
                 # Remove working dir
                 cleanup_working_dir(job_id)
                 # Remove retained WebODM project (v0.7.6+)
@@ -597,6 +645,8 @@ def purge_expired_jobs():
                 geotiff = get_geotiff_path(job)
                 if geotiff and os.path.exists(geotiff):
                     os.remove(geotiff)
+                # Remove photo sidecar (v0.8.3)
+                delete_photos_sidecar(job['job_id'])
                 cleanup_working_dir(job['job_id'])
                 # Clean up retained WebODM project (v0.7.6+)
                 if job.get('retain_task') and job.get('webodm_project_id'):
