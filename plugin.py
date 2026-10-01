@@ -20,7 +20,7 @@ class Plugin(PluginBase):
             # render uses them without a round-trip (v0.8.1).
             user_settings = archive.get_user_settings(request.user.username)
             return render(request, self.template_path("app.html"), {
-                'plugin_version': '0.8.2',
+                'plugin_version': '0.8.4',
                 'user_settings': user_settings,
                 'resize_target_standard': 2048,
                 'resize_target_high_res': 4000,
@@ -28,7 +28,7 @@ class Plugin(PluginBase):
 
         @login_required
         def ping(request):
-            return JsonResponse({'status': 'ok', 'version': '0.8.2'})
+            return JsonResponse({'status': 'ok', 'version': '0.8.4'})
 
         return [
             # ── UI ──────────────────────────────────────────────────
