@@ -195,14 +195,14 @@
             position: relative; display: flex; flex-direction: column;
             align-items: center; justify-content: center;
             padding: 20px 16px; min-height: 84px;
-            background: var(--bg); border: 1px dashed var(--border-hi);
+            background: var(--bg3); border: 1px dashed var(--border-hi);
             border-radius: 3px; text-align: center; cursor: pointer;
             transition: border-color 0.15s, background 0.15s;
         }
         .photo-picker:hover { border-color: var(--accent-dim); }
         .photo-picker--has-files {
             border-style: solid; border-color: var(--accent-dim);
-            background: rgba(0,174,239,0.04);
+            background: rgba(0,174,239,0.1);
         }
         .photo-picker__icon { font-size: 18px; color: var(--text-dim); margin-bottom: 4px; }
         .photo-picker__primary {
@@ -227,6 +227,14 @@
         .photo-picker__stat .value { color: var(--text-bright); }
         .photo-picker__gps-ok { color: var(--green); }
         .photo-picker__gps-bad { color: var(--red); }
+
+        /* ── Flight path map ────────────────────────────────────── */
+        /* The map's SVG is drawn with width:100%/height:auto against a
+           600x400 viewBox, so it fills whatever width its container gets.
+           #flight-path-map has no width cap otherwise, so on a wide form
+           it was rendering ~1500px+ across (and proportionally as tall) --
+           far larger than a flight-path preview needs to be. */
+        #flight-path-map { max-width: 480px; }
 
         /* ── Options box ────────────────────────────────────────── */
         .options-box {
@@ -313,6 +321,16 @@
         }
         .btn-danger:not(:disabled):hover {
             background: var(--red); color: var(--bg); border-color: var(--red);
+        }
+        /* Filled green — used only for the main PROCESS button so it reads
+           clearly as the primary call-to-action, distinct from the outline
+           --accent style .btn-primary keeps everywhere else (Settings'
+           segmented controls, Download GeoTIFF, Save). */
+        .btn-success {
+            background: var(--green); color: var(--bg); border-color: var(--green);
+        }
+        .btn-success:not(:disabled):hover {
+            background: #27b765; border-color: #27b765;
         }
         .btn--block { width: 100%; }
         .btn--sm { padding: 5px 10px; font-size: 9px; }
@@ -728,31 +746,8 @@
                     <div class="field-hint">The name becomes the file name. The date and time are added.</div>
                 </div>
 
-                <div class="field-row">
-                    <label class="field-label">PHOTOS</label>
-                    <div id="photo-picker" class="photo-picker">
-                        <div class="photo-picker__icon" id="picker-icon">▸</div>
-                        <div class="photo-picker__primary" id="picker-primary">CLICK TO SELECT PHOTOS</div>
-                        <div class="photo-picker__secondary" id="picker-secondary">JPEG only · GPS-tagged · max 150</div>
-                        <div class="photo-picker__stats" id="picker-stats" style="display:none;">
-                            <span class="photo-picker__stat">SIZE: <span class="value" id="picker-size">—</span></span>
-                            <span class="photo-picker__stat">CAMERAS: <span class="value" id="picker-cameras">—</span></span>
-                            <span class="photo-picker__stat photo-picker__gps-ok" id="picker-gps">GPS OK · 0 / 0</span>
-                            <span class="photo-picker__stat" id="picker-limit">CLICK TO CHANGE · MAX 150</span>
-                        </div>
-                        <input type="file" id="photo-input" class="photo-picker__file-input"
-                               accept="image/jpeg,image/jpg,.jpeg,.jpg" multiple
-                               onchange="onFilesSelected(this)">
-                    </div>
-                </div>
-
-                <!-- Flight path map (v0.8.3) -->
-                <div class="field-row" id="flight-path-container" style="display:none;">
-                    <label class="field-label">FLIGHT PATH</label>
-                    <div id="flight-path-map"></div>
-                </div>
-
-                <!-- Options -->
+                <!-- Options (moved above Photos: operators set job options before
+                     selecting files, rather than discovering them afterward) -->
                 <div class="field-row">
                     <label class="field-label">OPTIONS</label>
                     <div class="options-box">
@@ -796,7 +791,31 @@
                 </div>
 
                 <div class="field-row">
-                    <button type="button" id="process-btn" class="btn btn-primary btn--block btn--lg"
+                    <label class="field-label">PHOTOS</label>
+                    <div id="photo-picker" class="photo-picker">
+                        <div class="photo-picker__icon" id="picker-icon">▸</div>
+                        <div class="photo-picker__primary" id="picker-primary">CLICK TO SELECT PHOTOS</div>
+                        <div class="photo-picker__secondary" id="picker-secondary">JPEG only · GPS-tagged · max 150</div>
+                        <div class="photo-picker__stats" id="picker-stats" style="display:none;">
+                            <span class="photo-picker__stat">SIZE: <span class="value" id="picker-size">—</span></span>
+                            <span class="photo-picker__stat">CAMERAS: <span class="value" id="picker-cameras">—</span></span>
+                            <span class="photo-picker__stat photo-picker__gps-ok" id="picker-gps">GPS OK · 0 / 0</span>
+                            <span class="photo-picker__stat" id="picker-limit">CLICK TO CHANGE · MAX 150</span>
+                        </div>
+                        <input type="file" id="photo-input" class="photo-picker__file-input"
+                               accept="image/jpeg,image/jpg,.jpeg,.jpg" multiple
+                               onchange="onFilesSelected(this)">
+                    </div>
+                </div>
+
+                <!-- Flight path map (v0.8.3) -->
+                <div class="field-row" id="flight-path-container" style="display:none;">
+                    <label class="field-label">FLIGHT PATH</label>
+                    <div id="flight-path-map"></div>
+                </div>
+
+                <div class="field-row">
+                    <button type="button" id="process-btn" class="btn btn-success btn--block btn--lg"
                             onclick="onProcessClick()" disabled>
                         <span>▶ PROCESS <span id="process-btn-count">0</span> PHOTOS</span>
                     </button>
