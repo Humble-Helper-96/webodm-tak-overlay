@@ -159,7 +159,7 @@ logger = logging.getLogger('app.plugins.tak_incident_overlay')
 # ---------------------------------------------------------------------------
 
 def start(job_id, saved_paths, retain_task=False, quality_mode=False,
-          terrain_correction=False, submitting_username=None):
+          terrain_correction=False, client_resized=False, submitting_username=None):
     """
     Kick off the async pipeline.  Returns immediately — all real work happens
     in _run_pipeline() via Celery in the worker container.
@@ -208,7 +208,8 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
         f"{' (terrain_correction=True)' if terrain_correction else ''}"
     )
     run_function_async(_run_pipeline, job_id, saved_paths, retain_task,
-                       quality_mode, terrain_correction, submitting_username)
+                       quality_mode, terrain_correction, client_resized,
+                       submitting_username)
 
 
 # ---------------------------------------------------------------------------
@@ -218,8 +219,8 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
 # ---------------------------------------------------------------------------
 
 def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
-                  terrain_correction=False, submitting_username=None,
-                  progress_callback=None):
+                  terrain_correction=False, client_resized=False,
+                  submitting_username=None, progress_callback=None):
     """
     Full pipeline — runs asynchronously inside the Celery worker container.
 
@@ -371,7 +372,12 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     # output GSD floor around 4.3 cm regardless of orthophoto-resolution.
     # Quality mode 4000: native sensor resolution. Required to actually
     # resolve a 2.5 cm/px orthophoto.
-    RESIZE_TO = 4000 if quality_mode else 2048
+    # v0.8.2: If the browser already resized photos to the target (and the
+    # server confirmed all are within it), skip server-side resize.
+    if client_resized:
+        RESIZE_TO = -1
+    else:
+        RESIZE_TO = 4000 if quality_mode else 2048
 
     # =====================================================================
     # Nested helpers — share scope (subprocess, logger, etc.) via closure

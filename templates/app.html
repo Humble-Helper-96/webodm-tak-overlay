@@ -1054,6 +1054,293 @@ if (serverUserSettings) {
     if (serverUserSettings.save_task_default !== undefined) settings.saveTaskDefault = serverUserSettings.save_task_default;
 }
 
+// ── Resize targets (passed from plugin.py template, v0.8.2) ─────
+var RESIZE_TARGET_STANDARD = {{ resize_target_standard|default:2048 }};
+var RESIZE_TARGET_HIGH_RES = {{ resize_target_high_res|default:4000 }};
+
+// ── Client-side resize state (v0.8.2) ──────────────────────────
+var resizeWorker = null;
+var resizeResults = [];       // {file, blob, originalSize, resizedSize, used}
+var resizeErrors = [];        // files that failed client resize
+var totalOriginalBytes = 0;
+var totalResizedBytes = 0;
+
+// ── Client-side resize Web Worker (v0.8.2) ─────────────────────
+// The worker receives {blob, target, fileName} and returns
+// {blob, originalSize, resizedSize, fileName, error}.
+// It copies all APPn metadata segments from the original JPEG into
+// the resized JPEG, right after the SOI marker, preserving EXIF GPS,
+// DJI XMP, and any Autel data.
+
+var RESIZE_WORKER_SOURCE = `
+self.onmessage = function(e) {
+    var data = e.data;
+    var blob = data.blob;
+    var target = data.target;
+    var fileName = data.fileName;
+
+    // Read the original file as ArrayBuffer
+    var reader = new FileReader();
+    reader.onload = function() {
+        try {
+            var originalBuffer = reader.result;
+            var originalBytes = new Uint8Array(originalBuffer);
+
+            // Extract APPn segments (everything between SOI and SOS/EOI)
+            // JPEG structure: SOI (FFD8) | APPn segments | ... | SOS (FFDA) | data | EOI (FFD9)
+            var appnSegments = extractAppnSegments(originalBytes);
+
+            // Create image bitmap with no rotation (we handle orientation via EXIF)
+            var bitmap = null;
+            try {
+                bitmap = createImageBitmap(new Blob([originalBuffer], {type: 'image/jpeg'}), {imageOrientation: 'none'});
+            } catch(err) {
+                // Fallback: try without options
+                bitmap = createImageBitmap(new Blob([originalBuffer], {type: 'image/jpeg'}));
+            }
+
+            bitmap.then(function(bmp) {
+                var w = bmp.width;
+                var h = bmp.height;
+                var longest = Math.max(w, h);
+
+                // If already at or under target, return original
+                if (longest <= target) {
+                    bmp.close();
+                    self.postMessage({
+                        blob: blob,
+                        originalSize: blob.size,
+                        resizedSize: blob.size,
+                        fileName: fileName,
+                        used: false,
+                        error: null
+                    });
+                    return;
+                }
+
+                // Calculate new dimensions
+                var scale = target / longest;
+                var newW = Math.round(w * scale);
+                var newH = Math.round(h * scale);
+
+                // Draw to OffscreenCanvas
+                var canvas = new OffscreenCanvas(newW, newH);
+                var ctx = canvas.getContext('2d');
+                ctx.drawImage(bmp, 0, 0, newW, newH);
+                bmp.close();
+
+                // Convert to JPEG blob
+                canvas.convertToBlob({type: 'image/jpeg', quality: 0.92}).then(function(resizedBlob) {
+                    // Read resized JPEG and inject APPn segments
+                    var resizedReader = new FileReader();
+                    resizedReader.onload = function() {
+                        var resizedBytes = new Uint8Array(resizedReader.result);
+                        var finalBytes = injectAppnSegments(resizedBytes, appnSegments);
+
+                        var finalBlob = new Blob([finalBytes], {type: 'image/jpeg'});
+                        self.postMessage({
+                            blob: finalBlob,
+                            originalSize: blob.size,
+                            resizedSize: finalBlob.size,
+                            fileName: fileName,
+                            used: true,
+                            error: null
+                        });
+                    };
+                    resizedReader.readAsArrayBuffer(resizedBlob);
+                }).catch(function(err) {
+                    self.postMessage({
+                        blob: blob,
+                        originalSize: blob.size,
+                        resizedSize: blob.size,
+                        fileName: fileName,
+                        used: false,
+                        error: 'Canvas conversion failed: ' + err.message
+                    });
+                });
+            }).catch(function(err) {
+                self.postMessage({
+                    blob: blob,
+                    originalSize: blob.size,
+                    resizedSize: blob.size,
+                    fileName: fileName,
+                    used: false,
+                    error: 'Image decode failed: ' + err.message
+                });
+            });
+        } catch(err) {
+            self.postMessage({
+                blob: blob,
+                originalSize: blob.size,
+                resizedSize: blob.size,
+                fileName: fileName,
+                used: false,
+                error: err.message
+            });
+        }
+    };
+    reader.onerror = function() {
+        self.postMessage({
+            blob: blob,
+            originalSize: blob.size,
+            resizedSize: blob.size,
+            fileName: fileName,
+            used: false,
+            error: 'File read failed'
+        });
+    };
+    reader.readAsArrayBuffer(blob);
+};
+
+function extractAppnSegments(bytes) {
+    // Find SOI (FFD8), then collect all APPn segments until we hit SOS (FFDA) or EOI (FFD9)
+    var segments = [];
+    var offset = 0;
+
+    // Check SOI
+    if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return segments;
+    offset = 2;
+
+    while (offset < bytes.length - 1) {
+        // Look for marker
+        if (bytes[offset] !== 0xFF) {
+            offset++;
+            continue;
+        }
+        var marker = bytes[offset + 1];
+
+        // SOS (FFDA) — start of scan, stop collecting APPn
+        if (marker === 0xDA) break;
+        // EOI (FFD9) — end of image
+        if (marker === 0xD9) break;
+        // SOI (FFD8) — unexpected, skip
+        if (marker === 0xD8) {
+            offset += 2;
+            continue;
+        }
+
+        // APPn markers (FFE0–FFEF)
+        if (marker >= 0xE0 && marker <= 0xEF) {
+            var length = (bytes[offset + 2] << 8) | bytes[offset + 3];
+            var segment = bytes.slice(offset, offset + 2 + length);
+            segments.push(segment);
+            offset += 2 + length;
+        } else {
+            // Other markers (DQT, DHT, SOF, COM, etc.) — skip
+            if (offset + 3 < bytes.length) {
+                var len = (bytes[offset + 2] << 8) | bytes[offset + 3];
+                offset += 2 + len;
+            } else {
+                offset++;
+            }
+        }
+    }
+    return segments;
+}
+
+function injectAppnSegments(resizedBytes, appnSegments) {
+    if (!appnSegments || appnSegments.length === 0) return resizedBytes;
+
+    // Find SOI in resized JPEG
+    if (resizedBytes[0] !== 0xFF || resizedBytes[1] !== 0xD8) return resizedBytes;
+
+    // Build new byte array: SOI + APPn segments + rest of resized JPEG (after SOI)
+    var totalLength = 2; // SOI
+    for (var i = 0; i < appnSegments.length; i++) {
+        totalLength += appnSegments[i].length;
+    }
+    totalLength += resizedBytes.length - 2; // rest after SOI
+
+    var result = new Uint8Array(totalLength);
+    var pos = 0;
+
+    // SOI
+    result[pos++] = 0xFF;
+    result[pos++] = 0xD8;
+
+    // APPn segments
+    for (var i = 0; i < appnSegments.length; i++) {
+        result.set(appnSegments[i], pos);
+        pos += appnSegments[i].length;
+    }
+
+    // Rest of resized JPEG (after SOI)
+    result.set(resizedBytes.slice(2), pos);
+
+    return result;
+}
+`;
+
+function createResizeWorker() {
+    if (resizeWorker) return resizeWorker;
+    var blob = new Blob([RESIZE_WORKER_SOURCE], {type: 'application/javascript'});
+    var url = URL.createObjectURL(blob);
+    resizeWorker = new Worker(url);
+    return resizeWorker;
+}
+
+// Resize a single file using the worker
+function resizeFile(file, target) {
+    return new Promise(function(resolve) {
+        var worker = createResizeWorker();
+        var timeout = setTimeout(function() {
+            resolve({file: file, blob: file, originalSize: file.size, resizedSize: file.size, used: false, error: 'timeout'});
+        }, 30000);
+
+        worker.onmessage = function(e) {
+            clearTimeout(timeout);
+            resolve(e.data);
+        };
+        worker.onerror = function(e) {
+            clearTimeout(timeout);
+            resolve({file: file, blob: file, originalSize: file.size, resizedSize: file.size, used: false, error: e.message});
+        };
+
+        worker.postMessage({blob: file, target: target, fileName: file.name});
+    });
+}
+
+// Resize all selected files, showing progress
+async function resizeAllFiles(files, target, onProgress) {
+    resizeResults = [];
+    resizeErrors = [];
+    totalOriginalBytes = 0;
+    totalResizedBytes = 0;
+
+    var worker = createResizeWorker();
+    var completed = 0;
+
+    // Process files sequentially to keep memory flat
+    for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        totalOriginalBytes += file.size;
+
+        try {
+            var result = await resizeFile(file, target);
+            resizeResults.push(result);
+            totalResizedBytes += result.resizedSize;
+            if (result.error) {
+                resizeErrors.push(result);
+            }
+        } catch(err) {
+            // Fallback: use original
+            resizeResults.push({file: file, blob: file, originalSize: file.size, resizedSize: file.size, used: false, error: err.message});
+            totalResizedBytes += file.size;
+            resizeErrors.push({file: file, error: err.message});
+        }
+
+        completed++;
+        if (onProgress) onProgress(completed, files.length);
+    }
+
+    return {
+        results: resizeResults,
+        errors: resizeErrors,
+        totalOriginalBytes: totalOriginalBytes,
+        totalResizedBytes: totalResizedBytes
+    };
+}
+
 // ── Unit formatter (v0.8.0: metric only) ──────────────────────────
 var Units = {
     // Length: meters → "60–100 m" or "200–330 ft"
@@ -1768,7 +2055,7 @@ function updateProcessButton() {
 
 // ── Submit ─────────────────────────────────────────────────────────
 
-function onProcessClick() {
+async function onProcessClick() {
     hideFlash('flash-upload');
     hideFlash('flash-status');
 
@@ -1778,6 +2065,50 @@ function onProcessClick() {
     if (!name) { showFlash('flash-upload', 'Please enter a location of incident.'); return; }
     if (!files.length) { showFlash('flash-upload', 'Please select at least one photo.'); return; }
 
+    setFormLocked(true);
+    showUploadPhase();
+
+    // ── Client-side resize (v0.8.2) ──────────────────────────
+    // Determine the target size based on quality mode
+    var target = document.getElementById('quality-mode-toggle').checked
+        ? RESIZE_TARGET_HIGH_RES
+        : RESIZE_TARGET_STANDARD;
+
+    var fileArray = Array.prototype.slice.call(files);
+    var usedClientResize = false;
+    var resizeInfo = null;
+
+    // Check if browser supports client-side resize
+    var canResize = typeof Worker !== 'undefined' &&
+                    typeof OffscreenCanvas !== 'undefined' &&
+                    typeof createImageBitmap !== 'undefined';
+
+    if (canResize) {
+        // Show preparing phase
+        setUploadProgress(0);
+        var prepareSeg = document.querySelector('.phase-seg[data-phase="prepare"]');
+        if (prepareSeg) prepareSeg.classList.add('active');
+
+        try {
+            resizeInfo = await resizeAllFiles(fileArray, target, function(completed, total) {
+                var pct = Math.round(completed / total * 100);
+                setUploadProgress(pct);
+            });
+
+            // Check if all files were successfully resized
+            if (resizeInfo.errors.length === 0) {
+                usedClientResize = true;
+            } else {
+                // Some files failed — use originals for those
+                usedClientResize = true; // Still send resized ones; server checks dimensions
+            }
+        } catch(err) {
+            // Client resize failed entirely — fall back to originals
+            usedClientResize = false;
+        }
+    }
+
+    // Build FormData with (possibly resized) files
     var fd = new FormData();
     fd.append('incident_name', name);
     fd.append('tz_offset', new Date().getTimezoneOffset());
@@ -1785,11 +2116,33 @@ function onProcessClick() {
     fd.append('retain_task', document.getElementById('retain-task-toggle').checked ? 'true' : 'false');
     fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
     fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
-    for (var i = 0; i < files.length; i++) fd.append('images[]', files[i]);
+    fd.append('client_resized', usedClientResize ? 'true' : 'false');
 
-    setFormLocked(true);
-    showUploadPhase();
-    setUploadProgress(0);
+    // Use resized blobs if available, otherwise originals
+    if (usedClientResize && resizeInfo && resizeInfo.results.length > 0) {
+        for (var i = 0; i < resizeInfo.results.length; i++) {
+            var r = resizeInfo.results[i];
+            fd.append('images[]', r.blob, r.file.name);
+        }
+    } else {
+        for (var i = 0; i < fileArray.length; i++) {
+            fd.append('images[]', fileArray[i]);
+        }
+    }
+
+    // Update resize stat display
+    if (usedClientResize && resizeInfo) {
+        var origMB = (resizeInfo.totalOriginalBytes / 1024 / 1024).toFixed(1);
+        var resizedMB = (resizeInfo.totalResizedBytes / 1024 / 1024).toFixed(1);
+        var statEl = document.getElementById('stat-resized');
+        if (statEl) statEl.textContent = origMB + ' MB → ' + resizedMB + ' MB';
+    }
+
+    // Mark prepare and upload phases
+    var prepareSeg2 = document.querySelector('.phase-seg[data-phase="prepare"]');
+    var uploadSeg = document.querySelector('.phase-seg[data-phase="upload"]');
+    if (prepareSeg2) { prepareSeg2.classList.remove('active'); prepareSeg2.classList.add('done'); }
+    if (uploadSeg) uploadSeg.classList.add('active');
 
     var xhr = new XMLHttpRequest();
     xhr.open('POST', '/plugins/tak_incident_overlay/upload/');

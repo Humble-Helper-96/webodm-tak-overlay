@@ -174,6 +174,13 @@ def upload_view(request):
     # reference hardware.
     terrain_correction = request.POST.get('terrain_correction', 'false').lower() == 'true'
 
+    # ── Parse client_resized flag (v0.8.2) ─────────────────────
+    # When the browser has already resized photos to the target size,
+    # the server skips its own resize step. The server verifies each
+    # photo's dimensions and falls back to server-side resize if any
+    # photo exceeds the target.
+    client_resized = request.POST.get('client_resized', 'false').lower() == 'true'
+
     # ── Validate photo list ────────────────────────────────────
     images = request.FILES.getlist('images[]')
     if not images:
@@ -216,6 +223,12 @@ def upload_view(request):
         log.exception('TAK Overlay: failed to create job record: %s', e)
         return _err('Failed to create job record. Please try again.')
 
+    # ── Determine resize target (v0.8.2) ──────────────────────
+    # The browser sends client_resized=true when it has already resized
+    # photos to the target. The server verifies dimensions and falls back
+    # to server-side resize if any photo exceeds the target.
+    resize_target = 4000 if quality_mode else 2048
+
     # ── Validate + save in one pass ────────────────────────────
     # Read each file once via _read_upload_bytes (which uses
     # temporary_file_path() for large files), validate the bytes, and
@@ -223,6 +236,7 @@ def upload_view(request):
     # we delete the job (which cleans up any files saved so far) and
     # return the operator-facing error.
     saved_paths = []
+    all_within_target = True
     try:
         for idx, img in enumerate(images, start=1):
             try:
@@ -242,6 +256,23 @@ def upload_view(request):
             if not ok:
                 archive.delete_job(job_id)
                 return _err(err_msg)
+
+            # v0.8.2: Check if photo is within the target size.
+            # If client_resized=true but a photo exceeds the target,
+            # the server will resize it (fallback).
+            if client_resized:
+                try:
+                    with PilImage.open(io.BytesIO(data)) as pil_img:
+                        w, h = pil_img.size
+                        longest = max(w, h)
+                        if longest > resize_target:
+                            all_within_target = False
+                            log.info(
+                                'TAK Overlay: photo "%s" is %dx%d (longest %d > target %d) — server will resize',
+                                img.name, w, h, longest, resize_target,
+                            )
+                except Exception:
+                    all_within_target = False
 
             # Prefix with the loop index (v0.7.13): merging photos from two
             # SD cards routinely produces duplicate names (DJI_0001.JPG twice),
@@ -263,15 +294,18 @@ def upload_view(request):
         return _err('Upload failed while saving files. Please try again.')
 
     # ── Kick off async pipeline ────────────────────────────────
+    # v0.8.2: If the browser resized photos and all are within the target,
+    # tell the pipeline to skip server-side resize (resize_to=-1).
     try:
         from . import pipeline
         pipeline.start(job_id, saved_paths, retain_task=retain_task,
                        quality_mode=quality_mode,
                        terrain_correction=terrain_correction,
+                       client_resized=(client_resized and all_within_target),
                        submitting_username=request.user.username)
         log.info(
-            'TAK Overlay: pipeline started for job %s',
-            job_id,
+            'TAK Overlay: pipeline started for job %s (client_resized=%s)',
+            job_id, client_resized and all_within_target,
         )
     except Exception as e:
         log.exception('TAK Overlay: failed to start pipeline for job %s', job_id)

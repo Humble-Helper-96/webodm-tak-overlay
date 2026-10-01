@@ -7,6 +7,24 @@ loose.
 
 ---
 
+## [0.8.2] — 2026-09-30
+
+### Added
+- **Client-side photo resize** (Workstream A). Photos are resized in the browser before upload using a Web Worker with OffscreenCanvas. A 150-photo job uploads a few hundred MB instead of well over 1 GB.
+- **APPn metadata preservation**. All APPn segments (EXIF GPS, DJI XMP, Autel data) are copied from the original JPEG into the resized JPEG, right after the SOI marker. This mirrors WebODM's own resize behavior.
+- **"Preparing photos" phase** in the progress panel. Shows resize progress (e.g., "Preparing photos 42/150") before upload begins.
+- **Resize stat cell** in the running panel showing original vs resized size (e.g., "1.72 GB → 142 MB").
+- **Server-side dimension verification**. The server checks each photo's dimensions when `client_resized=true`. If any photo exceeds the target, the server falls back to its own resize.
+- **Graceful fallback**. If the browser cannot do client-side resize (no Worker/OffscreenCanvas support), or if any photo fails, the original is uploaded and the server resizes as before.
+- **Resize targets passed from plugin.py** so browser and server share one value (2048 standard, 4000 high-res).
+
+### Changed
+- **pipeline.py** accepts `client_resized` parameter. When True, sets `resize_to=-1` to skip server-side resize.
+- **api.py** reads `client_resized` from POST data, verifies photo dimensions, and passes the flag to the pipeline.
+- **plugin.py** passes `resize_target_standard` and `resize_target_high_res` into the template.
+
+---
+
 ## [0.8.1] — 2026-09-30
 
 ### Added
