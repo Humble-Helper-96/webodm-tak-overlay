@@ -7,6 +7,22 @@ loose.
 
 ---
 
+## [0.8.4] — 2026-09-30
+
+### Added
+- **Post-job quality warning** (Workstream C). After ODM completes, the pipeline reads `odm_report/shots.geojson` to determine which photos were used in the reconstruction. When more than 30% of photos were not used, a warning is shown: "⚠ 82 / 125 photos used — possible low overlap."
+- **Used/unused photo map** (Workstream E, part 2). The photo map now shows which photos ODM used (filled green dots) and which were not used (hollow red rings). Shape and color both change for color-blind accessibility.
+- **Photo map legend**: "● USED 82", "○ NOT USED 43", "— FLIGHT PATH".
+- **Quality warning in job details panel** and in the status flash when a job completes.
+- **Used photo count in status API**: `status_view` returns `used_count`, `total_count`, and `quality_warning`.
+
+### Changed
+- **pipeline.py** reads `odm_report/shots.geojson` after ODM completes and updates the sidecar file with `used` flags for each photo point.
+- **api.py** `status_view` returns the used photo count and quality warning.
+- **app.html** `renderJobDetails` shows the quality warning and draws the used/unused photo map for completed jobs.
+
+---
+
 ## [0.8.3] — 2026-09-30
 
 ### Added

@@ -722,6 +722,65 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         logger.info(f"[TAK] {job_id}: Orthophoto located at {ortho_path}")
 
         # ------------------------------------------------------------------
+        # Step 5b — Read used-photo list (v0.8.4, Workstream C + E part 2)
+        #
+        # After ODM completes, read the list of photos that ODM placed in
+        # the reconstruction. WebODM uses this for its "camera shots" map
+        # layer. The file is odm_report/shots.geojson in the task assets.
+        # Match by file name and write a `used` flag for each point into
+        # the sidecar file.
+        # ------------------------------------------------------------------
+        used_photo_names = set()
+        try:
+            import json as _json
+            shots_path = os.path.join(
+                settings.MEDIA_ROOT,
+                'project', str(project.id),
+                'task',    str(task.id),
+                'assets',  'odm_report', 'shots.geojson',
+            )
+            if os.path.exists(shots_path):
+                with open(shots_path, 'r') as f:
+                    shots_data = _json.load(f)
+                # shots.geojson is a GeoJSON FeatureCollection
+                # Each feature has properties.name = photo file name
+                for feature in shots_data.get('features', []):
+                    props = feature.get('properties', {})
+                    name = props.get('name', '')
+                    if name:
+                        used_photo_names.add(name)
+                logger.info(
+                    f"[TAK] {job_id}: Found {len(used_photo_names)} used photos in shots.geojson"
+                )
+            else:
+                logger.info(f"[TAK] {job_id}: No shots.geojson found — skipping used-photo analysis")
+        except Exception as exc:
+            logger.warning(f"[TAK] {job_id}: Could not read shots.geojson — {exc}")
+
+        # Update the sidecar file with used flags
+        if used_photo_names:
+            try:
+                sidecar_path = archive.get_photos_sidecar_path(job_id)
+                if os.path.exists(sidecar_path):
+                    with open(sidecar_path, 'r') as f:
+                        points = _json.load(f)
+                    for point in points:
+                        # Match by file name (without the numeric prefix)
+                        point_name = point.get('name', '')
+                        # The sidecar stores original names; the working dir
+                        # has prefixed names. Match by the original name.
+                        point['used'] = point_name in used_photo_names
+                    with open(sidecar_path, 'w') as f:
+                        _json.dump(points, f, indent=2)
+                    used_count = sum(1 for p in points if p.get('used'))
+                    total_count = len(points)
+                    logger.info(
+                        f"[TAK] {job_id}: Updated sidecar — {used_count}/{total_count} photos used"
+                    )
+            except Exception as exc:
+                logger.warning(f"[TAK] {job_id}: Could not update sidecar — {exc}")
+
+        # ------------------------------------------------------------------
         # Steps 6–7 — GDAL pipeline
         #
         # Output GeoTIFF lands in the archive directory (NOT working_dir)

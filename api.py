@@ -405,6 +405,18 @@ def status_view(request, job_id):
     # v0.8.3: Include photo points from sidecar file
     photo_points = archive.read_photos_sidecar(job_id)
 
+    # v0.8.4: Calculate used photo count and quality warning
+    used_count = None
+    total_count = None
+    quality_warning = None
+    if photo_points:
+        total_count = len(photo_points)
+        used_count = sum(1 for p in photo_points if p.get('used'))
+        if total_count > 0 and used_count is not None:
+            unused_ratio = (total_count - used_count) / total_count
+            if unused_ratio > 0.3:
+                quality_warning = f"⚠ {used_count} / {total_count} photos used — possible low overlap."
+
     return _ok(
         job_id=          job['job_id'],
         status=          job['status'],
@@ -414,6 +426,9 @@ def status_view(request, job_id):
         webodm_stage=    webodm_stage,
         file_size_bytes= job.get('file_size_bytes'),
         photo_points=    photo_points,
+        used_count=      used_count,
+        total_count=     total_count,
+        quality_warning= quality_warning,
         error=           job.get('error'),
     )
 
