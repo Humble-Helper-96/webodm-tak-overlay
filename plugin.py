@@ -12,16 +12,21 @@ class Plugin(PluginBase):
 
     def app_mount_points(self):
         from . import api
+        from . import archive
 
         @login_required
         def index(request):
+            # Pass current user's settings into the template so the first
+            # render uses them without a round-trip (v0.8.1).
+            user_settings = archive.get_user_settings(request.user.username)
             return render(request, self.template_path("app.html"), {
-                'plugin_version': '0.8.0',
+                'plugin_version': '0.8.1',
+                'user_settings': user_settings,
             })
 
         @login_required
         def ping(request):
-            return JsonResponse({'status': 'ok', 'version': '0.8.0'})
+            return JsonResponse({'status': 'ok', 'version': '0.8.1'})
 
         return [
             # ── UI ──────────────────────────────────────────────────
@@ -35,6 +40,9 @@ class Plugin(PluginBase):
             MountPoint('cancel/(?P<job_id>[^/]+)/$',     api.cancel_view),
             MountPoint('download-geotiff/(?P<job_id>[^/]+)/$',  api.download_geotiff_view),
             MountPoint('delete/(?P<job_id>[^/]+)/$',            api.delete_view),
+
+            # ── Settings (v0.8.1) ────────────────────────────────────
+            MountPoint('settings/$',                     api.settings_view),
 
             # ── Infrastructure status ────────────────────────────────
             MountPoint('node-status/$',                  api.node_status_view),

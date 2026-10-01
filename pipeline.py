@@ -206,7 +206,6 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
         f"{' (retain_task=True)' if retain_task else ''}"
         f"{' (quality_mode=True)' if quality_mode else ''}"
         f"{' (terrain_correction=True)' if terrain_correction else ''}"
-        f" (max_concurrency=3 — fixed, cpuset-pinned)"
     )
     run_function_async(_run_pipeline, job_id, saved_paths, retain_task,
                        quality_mode, terrain_correction, submitting_username)
@@ -287,16 +286,13 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     # Celery worker forever and silently eats one of the 3 job slots.
     MAX_RUNTIME_SECONDS = 3 * 60 * 60
 
-    # Percentage of the processing node's CPU cores to hand ODM via
-    # max-concurrency (v0.7.13). Previously a fixed value of 3, which was
-    # calibrated for a specific host's cpuset pinning (cores 3,4,5) and
-    # silently under- or over-committed on any other machine. 50% leaves
-    # headroom for WebODM's own webapp/worker/db containers and up to
-    # 3 concurrent jobs (this plugin's fixed job-slot limit) without
-    # oversubscribing the box; adjust here if that assumption changes.
-    CONCURRENCY_PERCENT = 50
+    # Percentage of the processing node's CPU threads to hand ODM via
+    # max-concurrency (v0.8.1: read from settings.json, admin-configurable).
+    # Previously a fixed value of 3 (v0.7.12 and earlier), then 50% (v0.7.13).
+    # The setting is read from archive.get_thread_percent() so an admin can
+    # adjust it without a code change.
 
-    def _get_node_cpu_cores():
+    def _get_node_cpu_threads():
         """
         Query the primary WebODM ProcessingNode's /info endpoint for its
         reported cpuCores. Mirrors the same node-lookup and probe pattern
@@ -327,12 +323,13 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
             logger.warning(f"[TAK] {job_id}: Could not read node cpuCores — {exc}")
             return None
 
-    _node_cores = _get_node_cpu_cores()
-    if _node_cores:
-        MAX_CONCURRENCY = max(1, round(_node_cores * CONCURRENCY_PERCENT / 100))
+    _thread_percent = archive.get_thread_percent()
+    _node_threads = _get_node_cpu_threads()
+    if _node_threads:
+        MAX_CONCURRENCY = max(1, round(_node_threads * _thread_percent / 100))
         logger.info(
-            f"[TAK] {job_id}: Node reports {_node_cores} cores — "
-            f"using {CONCURRENCY_PERCENT}% = {MAX_CONCURRENCY} threads"
+            f"[TAK] {job_id}: Node reports {_node_threads} CPU threads — "
+            f"using {_thread_percent}% = {MAX_CONCURRENCY} threads"
         )
     else:
         # Fallback if the node is unreachable or doesn't report cpuCores
@@ -351,9 +348,8 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     # Always-on:
     #   auto-boundary:true            — crop output to actual flight area
     #   max-concurrency:MAX_CONCURRENCY — computed above as
-    #                                    CONCURRENCY_PERCENT of the node's
-    #                                    reported cpuCores (v0.7.13).
-    #                                    Operator selection removed in v0.7.13.
+    #                                    thread_percent of the node's
+    #                                    reported cpuCores (v0.8.1: from settings).
     #
     # Conditional:
     #   fast-orthophoto:true          — added UNLESS terrain_correction is on.

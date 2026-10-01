@@ -7,6 +7,26 @@ loose.
 
 ---
 
+## [0.8.1] — 2026-09-30
+
+### Added
+- **Settings window** (`?settings=1`). Pop-out window with three groups: Display (units, time format), Job defaults (high-res on by default, save WebODM task on by default), and System (auto-purge retention, processing thread percentage — admin only). Falls back to modal when pop-ups are blocked.
+- **Per-user settings** stored on the server in `settings.json`, keyed by WebODM username. Settings follow the operator to any computer.
+- **Global settings** for retention (24h/48h/72h/7d/30d) and thread percentage (25%/50%/75%), admin-only.
+- **Settings API**: `GET settings/` returns global + user settings; `POST settings/` saves them with staff check on global changes.
+- **Imperial units support** in the unit formatter. All lengths, heights, areas, and GSD values convert when the unit setting changes.
+- **Live unit placeholder refresh** — when settings change, all `data-len` placeholders in both windows update without reload.
+- **SETTINGS link** in the header nav, visible from v0.8.1.
+- **Default toggles from settings** — high-res and save-task toggles initialize from per-user defaults.
+
+### Changed
+- **Thread percentage** read from `settings.json` instead of the `CONCURRENCY_PERCENT` constant in `pipeline.py`. Admin-configurable without code change.
+- **Retention** read from `settings.json` instead of hardcoded 72h. Applies to all jobs including existing ones.
+- **Log lines fixed**: `start()` no longer says "max_concurrency=3 — fixed, cpuset-pinned"; `_run_pipeline` says "Node reports N CPU threads" instead of "cores"; internal names renamed (`_get_node_cpu_cores` → `_get_node_cpu_threads`).
+- **plugin.py** passes current user's settings into the template so the first render uses them.
+
+---
+
 ## [0.8.0] — 2026-09-30
 
 ### Added

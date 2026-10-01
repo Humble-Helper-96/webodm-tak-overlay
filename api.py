@@ -478,6 +478,104 @@ def download_geotiff_view(request, job_id):
     return response
 
 
+# ── Settings (v0.8.1) ─────────────────────────────────────────────────────────
+
+@login_required
+def settings_view(request):
+    """
+    GET  /plugins/tak_incident_overlay/settings/  — read settings
+    POST /plugins/tak_incident_overlay/settings/  — save settings
+
+    GET returns:
+        {
+          "ok": true,
+          "global": { "retention_hours": 72, "thread_percent": 50 },
+          "user":   { "units": "metric", "time_format": "24h", ... },
+          "is_staff": false
+        }
+
+    POST accepts:
+        { "units": "metric", "time_format": "24h", "highres_default": false,
+          "save_task_default": false,
+          "global": { "retention_hours": 72, "thread_percent": 50 } }
+
+    The "global" block is only applied if the user is staff.
+    """
+    if request.method == 'GET':
+        username = request.user.username
+        user_settings = archive.get_user_settings(username)
+        global_settings = archive.get_settings().get('global', {})
+        return _ok(
+            **{'global': global_settings},
+            user=user_settings,
+            is_staff=request.user.is_staff,
+        )
+
+    if request.method == 'POST':
+        try:
+            import json
+            body = json.loads(request.body)
+        except (json.JSONDecodeError, TypeError):
+            return _err('Invalid JSON body.')
+
+        username = request.user.username
+
+        # Per-user settings
+        user_keys = {'units', 'time_format', 'highres_default', 'save_task_default'}
+        user_updates = {}
+        for key in user_keys:
+            if key in body:
+                user_updates[key] = body[key]
+
+        # Validate units
+        if 'units' in user_updates and user_updates['units'] not in ('metric', 'imperial'):
+            return _err('Units must be "metric" or "imperial".')
+        # Validate time_format
+        if 'time_format' in user_updates and user_updates['time_format'] not in ('24h', '12h'):
+            return _err('Time format must be "24h" or "12h".')
+
+        if user_updates:
+            # Merge with existing
+            existing = archive.get_user_settings(username)
+            existing.update(user_updates)
+            archive.save_user_settings(username, existing)
+
+        # Global settings — staff only
+        if 'global' in body and isinstance(body['global'], dict):
+            if not request.user.is_staff:
+                return _err('Only staff users can change system settings.', 403)
+            global_updates = {}
+            if 'retention_hours' in body['global']:
+                try:
+                    rh = int(body['global']['retention_hours'])
+                    if rh not in (24, 48, 72, 168, 720):
+                        return _err('Retention must be 24, 48, 72, 168, or 720 hours.')
+                    global_updates['retention_hours'] = rh
+                except (ValueError, TypeError):
+                    return _err('Invalid retention_hours value.')
+            if 'thread_percent' in body['global']:
+                try:
+                    tp = int(body['global']['thread_percent'])
+                    if tp not in (25, 50, 75):
+                        return _err('Thread percent must be 25, 50, or 75.')
+                    global_updates['thread_percent'] = tp
+                except (ValueError, TypeError):
+                    return _err('Invalid thread_percent value.')
+            if global_updates:
+                archive.save_global_settings(global_updates)
+
+        # Return updated state
+        user_settings = archive.get_user_settings(username)
+        global_settings = archive.get_settings().get('global', {})
+        return _ok(
+            **{'global': global_settings},
+            user=user_settings,
+            is_staff=request.user.is_staff,
+        )
+
+    return _err('GET or POST required.', 405)
+
+
 # ── Node status (v0.7.2) ───────────────────────────────────────────────────────
 
 @login_required

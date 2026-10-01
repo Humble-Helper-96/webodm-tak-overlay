@@ -62,7 +62,17 @@ log = logging.getLogger(__name__)
 ARCHIVE_SUBDIR  = 'tak_incident_overlay'
 WORKING_SUBDIR  = 'working'
 INDEX_FILENAME  = 'index.json'
-PURGE_HOURS     = 72
+SETTINGS_FILENAME = 'settings.json'
+PURGE_HOURS     = 72  # default retention, overridden by settings.json
+
+# Default settings
+DEFAULT_SETTINGS = {
+    'global': {
+        'retention_hours': 72,    # auto-purge after N hours (24/48/72/168/720)
+        'thread_percent': 50,     # percentage of node CPU threads for ODM
+    },
+    'users': {}  # keyed by username: {units, time_format, highres_default, save_task_default}
+}
 
 
 # ── Directory helpers ──────────────────────────────────────────────────────────
@@ -158,6 +168,135 @@ def _write_index(f, jobs):
 
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Settings file helpers (v0.8.1) ─────────────────────────────────────────────
+
+def _settings_path():
+    return os.path.join(get_archive_dir(), SETTINGS_FILENAME)
+
+
+def _ensure_settings():
+    """Create a default settings file if it doesn't exist yet."""
+    path = _settings_path()
+    if not os.path.exists(path):
+        with open(path, 'w') as f:
+            json.dump(DEFAULT_SETTINGS, f, indent=2)
+    return path
+
+
+def _read_settings(f):
+    f.seek(0)
+    content = f.read().strip()
+    if not content:
+        return dict(DEFAULT_SETTINGS)
+    data = json.loads(content)
+    # Merge with defaults to ensure all keys exist
+    merged = dict(DEFAULT_SETTINGS)
+    for key in merged:
+        if key in data:
+            if isinstance(merged[key], dict):
+                merged[key].update(data[key])
+            else:
+                merged[key] = data[key]
+    return merged
+
+
+def _write_settings(f, settings_data):
+    f.seek(0)
+    f.truncate()
+    json.dump(settings_data, f, indent=2, default=str)
+    f.flush()
+    os.fsync(f.fileno())
+
+
+def get_settings():
+    """
+    Read the full settings structure. Returns the merged settings dict
+    with 'global' and 'users' blocks.
+    """
+    path = _ensure_settings()
+    with open(path, 'r') as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return _read_settings(f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def get_user_settings(username):
+    """
+    Returns the settings for a specific user, merged with defaults.
+    """
+    all_settings = get_settings()
+    user_defaults = {
+        'units': 'metric',
+        'time_format': '24h',
+        'highres_default': False,
+        'save_task_default': False,
+    }
+    user_data = all_settings.get('users', {}).get(username, {})
+    user_defaults.update(user_data)
+    return user_defaults
+
+
+def save_user_settings(username, user_settings):
+    """
+    Save per-user settings. Only updates the user's block; global settings
+    are untouched.
+    """
+    path = _ensure_settings()
+    with open(path, 'r+') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            settings_data = _read_settings(f)
+            if 'users' not in settings_data:
+                settings_data['users'] = {}
+            settings_data['users'][username] = user_settings
+            _write_settings(f, settings_data)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+    log.info('TAK Overlay: saved user settings for %s', username)
+
+
+def save_global_settings(global_settings):
+    """
+    Save global (system-wide) settings. Only staff users may call this.
+    """
+    path = _ensure_settings()
+    with open(path, 'r+') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            settings_data = _read_settings(f)
+            settings_data['global'].update(global_settings)
+            _write_settings(f, settings_data)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+    log.info('TAK Overlay: saved global settings: %s', global_settings)
+
+
+def get_retention_hours():
+    """
+    Return the configured retention hours from settings.
+    Falls back to PURGE_HOURS (72) if settings can't be read.
+    """
+    try:
+        s = get_settings()
+        return s.get('global', {}).get('retention_hours', PURGE_HOURS)
+    except Exception:
+        return PURGE_HOURS
+
+
+def get_thread_percent():
+    """
+    Return the configured thread percentage from settings.
+    Falls back to 50 if settings can't be read.
+    """
+    try:
+        s = get_settings()
+        return s.get('global', {}).get('thread_percent', 50)
+    except Exception:
+        return 50
 
 
 def _sanitize_filename(name):
@@ -428,12 +567,13 @@ def delete_job(job_id):
 
 def purge_expired_jobs():
     """
-    Delete all jobs older than PURGE_HOURS (72h).
+    Delete all jobs older than the configured retention period.
     Removes GeoTIFF files, legacy MBTiles (pre-v0.7.8 jobs), working dirs,
     retained WebODM projects (if any), and index entries.
     Returns the number of jobs purged.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=PURGE_HOURS)
+    retention_hours = get_retention_hours()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
     path = _ensure_index()
 
     with open(path, 'r+') as f:

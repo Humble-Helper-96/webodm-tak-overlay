@@ -656,7 +656,7 @@
         </div>
         <div class="header-right">
             <a class="nav-link active" href="#" onclick="return false;">OVERLAY</a>
-            <a class="nav-link" href="?settings=1" id="nav-settings" style="display:none;">SETTINGS</a>
+            <a class="nav-link" href="?settings=1" id="nav-settings">SETTINGS</a>
             <a class="nav-link" href="https://webodm.org/" target="_blank">WEBODM ↗</a>
             <div class="hdiv"></div>
             <div class="status-dot" id="node-dot"></div>
@@ -913,6 +913,99 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- Settings Window (?settings=1)                                  -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="guide-window" id="settings-view" style="display:none;">
+    <div class="guide-header">
+        <div class="guide-header__left">
+            <span class="guide-header__title">TAK OVERLAY — SETTINGS</span>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-neutral btn--sm" onclick="closeSettings()">✕ CLOSE</button>
+        </div>
+    </div>
+    <div class="guide-body">
+        <div class="guide-content" style="max-width:600px;">
+            <div class="guide-content__title">SETTINGS</div>
+
+            <!-- Display group -->
+            <div style="margin-bottom:20px;">
+                <div class="section-label">DISPLAY</div>
+                <div class="details-row">
+                    <span class="details-label">UNITS</span>
+                    <div style="display:flex;gap:6px;">
+                        <button class="btn btn-neutral btn--sm" id="units-metric" onclick="setUnits('metric')">METRIC</button>
+                        <button class="btn btn-neutral btn--sm" id="units-imperial" onclick="setUnits('imperial')">IMPERIAL</button>
+                    </div>
+                </div>
+                <div class="details-row">
+                    <span class="details-label">TIME FORMAT</span>
+                    <div style="display:flex;gap:6px;">
+                        <button class="btn btn-neutral btn--sm" id="time-24h" onclick="setTimeFormat('24h')">24H</button>
+                        <button class="btn btn-neutral btn--sm" id="time-12h" onclick="setTimeFormat('12h')">12H</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Job defaults group -->
+            <div style="margin-bottom:20px;">
+                <div class="section-label">JOB DEFAULTS</div>
+                <div class="option-row" style="border:1px solid var(--border);border-radius:3px;margin-bottom:6px;">
+                    <label class="switch">
+                        <input type="checkbox" id="default-highres" onchange="setDefault('highres_default', this.checked)">
+                        <span class="switch__track"></span>
+                    </label>
+                    <span class="option-row__name">HIGH-RESOLUTION ON BY DEFAULT</span>
+                </div>
+                <div class="option-row" style="border:1px solid var(--border);border-radius:3px;">
+                    <label class="switch">
+                        <input type="checkbox" id="default-save-task" onchange="setDefault('save_task_default', this.checked)">
+                        <span class="switch__track"></span>
+                    </label>
+                    <span class="option-row__name">SAVE WEBODM TASK ON BY DEFAULT</span>
+                </div>
+            </div>
+
+            <!-- System group (admin only) -->
+            <div style="margin-bottom:20px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                    <span class="section-label" style="margin-bottom:0;">SYSTEM</span>
+                    <span class="job-row__badge active" id="admin-badge" style="display:none;">ADMIN ONLY</span>
+                </div>
+                <div class="details-row">
+                    <span class="details-label">AUTO-PURGE AFTER</span>
+                    <div style="display:flex;gap:4px;" id="retention-buttons">
+                        <button class="btn btn-neutral btn--sm" data-retention="24" onclick="setRetention(24)">24H</button>
+                        <button class="btn btn-neutral btn--sm" data-retention="48" onclick="setRetention(48)">48H</button>
+                        <button class="btn btn-neutral btn--sm" data-retention="72" onclick="setRetention(72)">72H</button>
+                        <button class="btn btn-neutral btn--sm" data-retention="168" onclick="setRetention(168)">7D</button>
+                        <button class="btn btn-neutral btn--sm" data-retention="720" onclick="setRetention(720)">30D</button>
+                    </div>
+                </div>
+                <div class="details-row">
+                    <span class="details-label">PROCESSING THREADS</span>
+                    <div style="display:flex;gap:4px;" id="thread-buttons">
+                        <button class="btn btn-neutral btn--sm" data-threads="25" onclick="setThreadPercent(25)">25%</button>
+                        <button class="btn btn-neutral btn--sm" data-threads="50" onclick="setThreadPercent(50)">50%</button>
+                        <button class="btn btn-neutral btn--sm" data-threads="75" onclick="setThreadPercent(75)">75%</button>
+                    </div>
+                </div>
+                <div class="details-row">
+                    <span class="details-label">THREAD CALC</span>
+                    <span class="details-value" id="thread-calc">—</span>
+                </div>
+            </div>
+
+            <!-- Save / Cancel -->
+            <div style="display:flex;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+                <button class="btn btn-primary" onclick="saveSettings()">SAVE</button>
+                <button class="btn btn-neutral" onclick="closeSettings()">CANCEL</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- Modal fallback (pop-ups blocked)                              -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
@@ -944,13 +1037,22 @@ var lastJobListRefresh = null;
 var jobStartTime  = null;
 var elapsedTimer  = null;
 
-// ── Settings (v0.8.0: metric only, per spec) ──────────────────────
+// ── Settings (v0.8.1: loaded from server, per-user) ──────────────
 var settings = {
-    units: 'metric',       // 'metric' | 'imperial' (imperial in v0.8.1)
-    timeFormat: '24h',     // '24h' | '12h' (v0.8.1)
+    units: 'metric',
+    timeFormat: '24h',
     highResDefault: false,
     saveTaskDefault: false
 };
+
+// Override with server-provided user settings (passed from plugin.py template)
+var serverUserSettings = {{ user_settings|safe }};
+if (serverUserSettings) {
+    if (serverUserSettings.units) settings.units = serverUserSettings.units;
+    if (serverUserSettings.time_format) settings.timeFormat = serverUserSettings.time_format;
+    if (serverUserSettings.highres_default !== undefined) settings.highResDefault = serverUserSettings.highres_default;
+    if (serverUserSettings.save_task_default !== undefined) settings.saveTaskDefault = serverUserSettings.save_task_default;
+}
 
 // ── Unit formatter (v0.8.0: metric only) ──────────────────────────
 var Units = {
@@ -1050,15 +1152,26 @@ var currentGuideSection = 0;
 // ── Init ───────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Check for ?guide=1
     var params = new URLSearchParams(window.location.search);
+
+    // Check for ?guide=1
     if (params.get('guide') === '1') {
         showGuideWindow();
         return;
     }
 
+    // Check for ?settings=1
+    if (params.get('settings') === '1') {
+        showSettingsWindow();
+        return;
+    }
+
     // Main view init
     document.getElementById('incident-name').addEventListener('input', updateProcessButton);
+
+    // Apply default toggles from settings
+    if (settings.highResDefault) document.getElementById('quality-mode-toggle').checked = true;
+    if (settings.saveTaskDefault) document.getElementById('retain-task-toggle').checked = true;
 
     loadArchive();
     setInterval(loadArchive, 60000);
@@ -1070,6 +1183,193 @@ document.addEventListener('DOMContentLoaded', function() {
     renderQuickRef('quick-ref-body');
     renderQuickRef('quick-ref-body-running');
 });
+
+// ── Settings window (v0.8.1) ──────────────────────────────────────
+
+function showSettingsWindow() {
+    document.getElementById('main-view').style.display = 'none';
+    document.getElementById('settings-view').style.display = 'flex';
+    loadSettingsUI();
+}
+
+function closeSettings() {
+    if (window.opener) {
+        window.close();
+    } else {
+        window.location.href = window.location.pathname;
+    }
+}
+
+function loadSettingsUI() {
+    fetch('/plugins/tak_incident_overlay/settings/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok) return;
+
+            // Update UI to reflect current settings
+            var user = data.user || {};
+            var global = data.global || {};
+
+            // Units buttons
+            document.getElementById('units-metric').className = 'btn btn--sm ' + (user.units === 'metric' ? 'btn-primary' : 'btn-neutral');
+            document.getElementById('units-imperial').className = 'btn btn--sm ' + (user.units === 'imperial' ? 'btn-primary' : 'btn-neutral');
+
+            // Time format buttons
+            document.getElementById('time-24h').className = 'btn btn--sm ' + (user.time_format !== '12h' ? 'btn-primary' : 'btn-neutral');
+            document.getElementById('time-12h').className = 'btn btn--sm ' + (user.time_format === '12h' ? 'btn-primary' : 'btn-neutral');
+
+            // Default toggles
+            document.getElementById('default-highres').checked = !!user.highres_default;
+            document.getElementById('default-save-task').checked = !!user.save_task_default;
+
+            // Admin-only elements
+            var isStaff = !!data.is_staff;
+            document.getElementById('admin-badge').style.display = isStaff ? '' : 'none';
+
+            // Retention buttons
+            var retention = global.retention_hours || 72;
+            document.querySelectorAll('#retention-buttons .btn').forEach(function(btn) {
+                var val = parseInt(btn.getAttribute('data-retention'));
+                btn.className = 'btn btn--sm ' + (val === retention ? 'btn-primary' : 'btn-neutral');
+                btn.disabled = !isStaff;
+                btn.style.opacity = isStaff ? '' : '0.4';
+            });
+
+            // Thread percent buttons
+            var threadPct = global.thread_percent || 50;
+            document.querySelectorAll('#thread-buttons .btn').forEach(function(btn) {
+                var val = parseInt(btn.getAttribute('data-threads'));
+                btn.className = 'btn btn--sm ' + (val === threadPct ? 'btn-primary' : 'btn-neutral');
+                btn.disabled = !isStaff;
+                btn.style.opacity = isStaff ? '' : '0.4';
+            });
+
+            // Thread calculation display
+            var cpuThreads = nodeInfo.cpuCores || 8;
+            var calcThreads = Math.max(1, Math.round(cpuThreads * threadPct / 100));
+            document.getElementById('thread-calc').textContent =
+                'Node reports ' + cpuThreads + ' CPU threads · jobs use ' + calcThreads;
+        })
+        .catch(function() {});
+}
+
+function setUnits(units) {
+    settings.units = units;
+    document.getElementById('units-metric').className = 'btn btn--sm ' + (units === 'metric' ? 'btn-primary' : 'btn-neutral');
+    document.getElementById('units-imperial').className = 'btn btn--sm ' + (units === 'imperial' ? 'btn-primary' : 'btn-neutral');
+    refreshUnitPlaceholders();
+}
+
+function setTimeFormat(fmt) {
+    settings.timeFormat = fmt;
+    document.getElementById('time-24h').className = 'btn btn--sm ' + (fmt !== '12h' ? 'btn-primary' : 'btn-neutral');
+    document.getElementById('time-12h').className = 'btn btn--sm ' + (fmt === '12h' ? 'btn-primary' : 'btn-neutral');
+}
+
+function setDefault(key, value) {
+    if (key === 'highres_default') settings.highResDefault = value;
+    if (key === 'save_task_default') settings.saveTaskDefault = value;
+}
+
+function setRetention(hours) {
+    document.querySelectorAll('#retention-buttons .btn').forEach(function(btn) {
+        var val = parseInt(btn.getAttribute('data-retention'));
+        btn.className = 'btn btn--sm ' + (val === hours ? 'btn-primary' : 'btn-neutral');
+    });
+}
+
+function setThreadPercent(pct) {
+    document.querySelectorAll('#thread-buttons .btn').forEach(function(btn) {
+        var val = parseInt(btn.getAttribute('data-threads'));
+        btn.className = 'btn btn--sm ' + (val === pct ? 'btn-primary' : 'btn-neutral');
+    });
+    var cpuThreads = nodeInfo.cpuCores || 8;
+    var calcThreads = Math.max(1, Math.round(cpuThreads * pct / 100));
+    document.getElementById('thread-calc').textContent =
+        'Node reports ' + cpuThreads + ' CPU threads · jobs use ' + calcThreads;
+}
+
+function saveSettings() {
+    // Collect current button states
+    var retention = 72;
+    document.querySelectorAll('#retention-buttons .btn').forEach(function(btn) {
+        if (btn.className.indexOf('btn-primary') !== -1) {
+            retention = parseInt(btn.getAttribute('data-retention'));
+        }
+    });
+
+    var threadPct = 50;
+    document.querySelectorAll('#thread-buttons .btn').forEach(function(btn) {
+        if (btn.className.indexOf('btn-primary') !== -1) {
+            threadPct = parseInt(btn.getAttribute('data-threads'));
+        }
+    });
+
+    var payload = {
+        units: settings.units,
+        time_format: settings.timeFormat,
+        highres_default: settings.highResDefault,
+        save_task_default: settings.saveTaskDefault,
+    };
+
+    // Only send global if user is staff (server enforces this too)
+    var isStaff = document.getElementById('admin-badge').style.display !== 'none';
+    if (isStaff) {
+        payload.global = {
+            retention_hours: retention,
+            thread_percent: threadPct,
+        };
+    }
+
+    var csrf = getCookie('csrftoken');
+    fetch('/plugins/tak_incident_overlay/settings/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrf || '',
+        },
+        body: JSON.stringify(payload),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            // Apply settings to main window if it exists
+            if (window.opener && window.opener.applySettings) {
+                window.opener.applySettings(data.user, data.global);
+            }
+            closeSettings();
+        } else {
+            alert(data.error || 'Failed to save settings.');
+        }
+    })
+    .catch(function() {
+        alert('Network error saving settings.');
+    });
+}
+
+function applySettings(userSettings, globalSettings) {
+    // Called by the settings window via window.opener
+    if (userSettings) {
+        if (userSettings.units) settings.units = userSettings.units;
+        if (userSettings.time_format) settings.timeFormat = userSettings.time_format;
+        if (userSettings.highres_default !== undefined) settings.highResDefault = userSettings.highres_default;
+        if (userSettings.save_task_default !== undefined) settings.saveTaskDefault = userSettings.save_task_default;
+    }
+    refreshUnitPlaceholders();
+}
+
+function refreshUnitPlaceholders() {
+    // Re-fill all unit placeholders in the main view
+    var mainView = document.getElementById('main-view');
+    if (mainView) {
+        fillUnitPlaceholdersInElement(mainView);
+    }
+    // Re-fill in guide window if visible
+    var guideView = document.getElementById('guide-view');
+    if (guideView && guideView.style.display !== 'none') {
+        fillUnitPlaceholdersInElement(guideView);
+    }
+}
 
 // ── View switching ─────────────────────────────────────────────────
 
@@ -1147,6 +1447,26 @@ function openGuideSection(sectionId) {
         // Pop-ups blocked — show in modal
         showModal(renderGuideModalContent(sectionId));
     }
+}
+
+function openSettings() {
+    var url = window.location.pathname + '?settings=1';
+    var popup = window.open(url, 'tak_settings', 'width=800,height=700');
+    if (!popup) {
+        // Pop-ups blocked — show in modal
+        showModal(renderSettingsModalContent());
+    }
+}
+
+function renderSettingsModalContent() {
+    var html = '<div style="max-width:600px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">';
+    html += '<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);letter-spacing:0.12em;">TAK OVERLAY — SETTINGS</span>';
+    html += '<button class="btn btn-neutral btn--sm" onclick="document.getElementById(\'modal-overlay\').classList.remove(\'open\')">✕ CLOSE</button>';
+    html += '</div>';
+    html += '<p style="font-family:var(--sans);font-size:12px;color:var(--text-dim);">Settings window could not open. Check that pop-ups are not blocked.</p>';
+    html += '</div>';
+    return html;
 }
 
 function showModal(content) {
