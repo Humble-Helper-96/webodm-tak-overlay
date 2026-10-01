@@ -1,3 +1,5 @@
+import json
+
 from app.plugins import PluginBase, Menu, MountPoint
 from django.shortcuts import render
 from django.http import JsonResponse
@@ -18,10 +20,26 @@ class Plugin(PluginBase):
         def index(request):
             # Pass current user's settings into the template so the first
             # render uses them without a round-trip (v0.8.1).
+            #
+            # user_settings MUST be JSON-serialized before reaching the
+            # template. app.html does `var serverUserSettings =
+            # {{ user_settings|safe }};` — |safe only stops Django from
+            # HTML-escaping the value, it does NOT serialize it. Handed a
+            # raw Python dict, Django's template engine falls back to
+            # str(dict), i.e. Python repr syntax: single-quoted strings and
+            # capitalized True/False/None. That's valid Python, not valid
+            # JavaScript — the browser hits "ReferenceError: False is not
+            # defined" on that line, which kills the entire rest of the
+            # inline <script> before the DOMContentLoaded handler even
+            # registers. The page loads but nothing on it ever works: no
+            # job list, no node status, no settings (confirmed against a
+            # HAR capture from the P310 — only the initial page + font
+            # requests fire, no XHR/fetch calls at all afterward).
+            # json.dumps() produces valid JS (lowercase true/false/null).
             user_settings = archive.get_user_settings(request.user.username)
             return render(request, self.template_path("app.html"), {
                 'plugin_version': '0.8.4',
-                'user_settings': user_settings,
+                'user_settings': json.dumps(user_settings),
                 'resize_target_standard': archive.RESIZE_TARGET_STANDARD,
                 'resize_target_high_res': archive.RESIZE_TARGET_HIGH_RES,
             })
