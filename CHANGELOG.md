@@ -7,6 +7,32 @@ loose.
 
 ---
 
+## [0.8.0] — 2026-09-30
+
+### Added
+- **Complete GUI rework** following the infra-TAK UI design system. New layout with header metrics, main pane (form + Quick Reference), and right sidebar (job list grouped by day + selected job details panel).
+- **Field Guide pop-out window** (`?guide=1`). Six sections: Image Capture, Terrain and Altitude, Upload and Process, Job Options, Import to TAK, Troubleshooting. Opens from ⓘ buttons beside options. Falls back to a modal when pop-ups are blocked.
+- **Quick Reference card** on the main pane with altitude, base, overlap, photos, GPS, limit, and runtime guidance.
+- **7-segment phase track** (PREPARE, UPLOAD, QUEUED, PROCESSING, FINALIZE, REPROJECT, EXPORT) with color-coded done/active/pending states.
+- **Accent corner brackets** framing the progress panel while a job runs.
+- **Node metrics in header**: NODE, QUEUE, CPU THREADS, MEM with threshold colors.
+- **Job list grouped by day** in the sidebar with status dots, tag lines, and SELECTED/ACTIVE badges.
+- **Selected job details panel** at the bottom of the sidebar with name, file, mode, status, size, created time, and action buttons.
+- **Unit formatter** (`Units` object) with metric as the default. All guide text and UI hints route through formatter functions.
+- **Design tokens** updated to match the infra-TAK design system spec verbatim.
+
+### Changed
+- **Process button** changed from filled green to outline style, fills on hover.
+- **Font Awesome icons replaced** with Unicode characters (↓ ✕ ▶ ⧉ ⓘ).
+- **Switch component** redesigned to 30×16 px square (3px radius) per spec.
+- **Token names renamed** to match design system (`--accent-amber` → `--amber`, `--text-muted` → `--text-dim`, etc.).
+- **Bullet lists in UI** converted to monospace rows.
+- **No inline `style="color: …"`** for static values — all use CSS classes.
+- **Scrollbars styled** per spec; minimum font size 9px; corners 3–4px.
+- **Guide text rewritten** following ASD-STE100 rules: commands, one instruction per sentence, 20 words or fewer per instruction, active voice, one word for one meaning.
+
+---
+
 ## [0.7.13] — 2026-07-19
 
 ### Fixed

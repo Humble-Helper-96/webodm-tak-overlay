@@ -1,5 +1,5 @@
 """
-api.py — TAK Incident Overlay (v0.7.13)
+api.py — TAK Incident Overlay (v0.8.0)
 All HTTP view functions. Registered as MountPoints in plugin.py.
 
 Endpoints:

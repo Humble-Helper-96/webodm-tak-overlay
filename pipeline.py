@@ -1,5 +1,5 @@
 """
-pipeline.py — TAK Incident Overlay plugin (v0.7.13)
+pipeline.py — TAK Incident Overlay plugin (v0.8.0)
 Async WebODM task creation, polling, and GDAL export pipeline.
 
 Entry point:  start(job_id, saved_paths)

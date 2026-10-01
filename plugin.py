@@ -16,12 +16,12 @@ class Plugin(PluginBase):
         @login_required
         def index(request):
             return render(request, self.template_path("app.html"), {
-                'plugin_version': '0.7.13',
+                'plugin_version': '0.8.0',
             })
 
         @login_required
         def ping(request):
-            return JsonResponse({'status': 'ok', 'version': '0.7.13'})
+            return JsonResponse({'status': 'ok', 'version': '0.8.0'})
 
         return [
             # ── UI ──────────────────────────────────────────────────
