@@ -540,15 +540,19 @@ def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
     job_id = str(uuid.uuid4())
     utc_now  = datetime.now(timezone.utc)
     local_dt = utc_now + timedelta(minutes=tz_offset_minutes)
-    display_name = '{} {}'.format(incident_name, local_dt.strftime('%Y-%m-%d %H%M'))
-    # Suffix the first 8 chars of the job UUID onto the filename base.
-    # display_name is only minute-precise, so two jobs with the same
-    # incident name in the same minute (a quick retry is the realistic
-    # case) would otherwise share a geotiff_filename — the second job's
-    # output overwrites the first's, and deleting either job removes the
-    # shared file out from under the surviving record. The UUID suffix
-    # makes every job's output path unique. display_name (what the
-    # operator sees in the UI) is unchanged.
+    # YYMMDD, no time-of-day: short, underscore-friendly, and stays valid
+    # across platforms with no colons/spaces for a client to mangle. This
+    # makes display_name only day-precise, so two jobs with the same
+    # incident name on the same day (a quick retry is the realistic case)
+    # collide more often than the old minute-precise stamp — the UUID
+    # suffix below is what actually keeps geotiff_filename unique, not
+    # this timestamp, so that's fine.
+    display_name = '{}_{}'.format(incident_name, local_dt.strftime('%y%m%d'))
+    # Suffix the first 8 chars of the job UUID onto the filename base so
+    # display_name colliding (see above) never causes one job's output to
+    # overwrite another's — deleting either job would otherwise remove the
+    # shared file out from under the surviving record. display_name (what
+    # the operator sees in the UI) is unchanged.
     safe_base = '{}_{}'.format(_sanitize_filename(display_name), job_id[:8])
     filename         = '{}.mbtiles'.format(safe_base)
     geotiff_filename = '{}.tif'.format(safe_base)

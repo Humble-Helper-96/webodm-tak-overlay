@@ -48,7 +48,8 @@
            these classes on <html> before the body is parsed, so this
            rule applies before #main-view ever paints. */
         html.popup-guide #main-view,
-        html.popup-settings #main-view { display: none; }
+        html.popup-settings #main-view,
+        html.popup-photomap #main-view { display: none; }
 
         /* ── App shell ───────────────────────────────────────────── */
         .app-shell {
@@ -687,17 +688,20 @@
     <script>
         // Runs synchronously while the <head> is still parsing, before any
         // part of <body> (including #main-view) exists — so the
-        // html.popup-guide/popup-settings CSS rule above is already active
-        // by the time #main-view would otherwise be created and painted.
-        // Keep this in sync with the ?guide=1/?settings=1 checks in the
-        // main DOMContentLoaded handler further down, which still does the
-        // actual view-switching logic (this only prevents the flash).
+        // html.popup-guide/popup-settings/popup-photomap CSS rule above is
+        // already active by the time #main-view would otherwise be created
+        // and painted. Keep this in sync with the ?guide=1/?settings=1/
+        // ?photomap=<job_id> checks in the main DOMContentLoaded handler
+        // further down, which still does the actual view-switching logic
+        // (this only prevents the flash).
         (function() {
             var params = new URLSearchParams(window.location.search);
             if (params.get('guide') === '1') {
                 document.documentElement.classList.add('popup-guide');
             } else if (params.get('settings') === '1') {
                 document.documentElement.classList.add('popup-settings');
+            } else if (params.get('photomap')) {
+                document.documentElement.classList.add('popup-photomap');
             }
         })();
     </script>
@@ -1084,6 +1088,28 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- Photo Map Window (?photomap=<job_id>) — v0.8.5                 -->
+<!-- Pop-out instead of embedding the used/unused map inline in the  -->
+<!-- sidebar, which was pushing the completed-job list out of view.  -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="guide-window" id="photomap-view" style="display:none;">
+    <div class="guide-header">
+        <div class="guide-header__left">
+            <span class="guide-header__title">TAK OVERLAY — PHOTO MAP</span>
+            <span class="guide-header__section" id="photomap-job-name">—</span>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-neutral btn--sm" onclick="closePhotoMap()">✕ CLOSE</button>
+        </div>
+    </div>
+    <div class="guide-body">
+        <div class="guide-content" style="max-width:680px;" id="photomap-content">
+            <div class="guide-content__title">Loading…</div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- Modal fallback (pop-ups blocked)                              -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
@@ -1456,9 +1482,10 @@ function finalizeGroups(groups) {
 }
 
 // Short, human-readable label for a group's job name suffix (e.g. the
-// "[...]" in "AutelTest02 [MAX]"). Just the filename prefix when exactly
-// one was seen for the group — "MAX"/"IRX" reads cleanly and is normally
-// all an operator needs to tell two jobs apart. Only falls back to
+// "_..." in "AutelTest02_MAX" — underscore-joined, no brackets, so the
+// name stays filesystem-safe across platforms). Just the filename prefix
+// when exactly one was seen for the group — "MAX"/"IRX" reads cleanly and
+// is normally all an operator needs to tell two jobs apart. Only falls back to
 // camera+dimensions (verbose, but unambiguous) when there's no single
 // clean prefix to use — the "uncertain" grouping case, where the operator
 // needs the extra detail anyway. Two cameras on the same rig can report
@@ -2328,6 +2355,13 @@ document.addEventListener('DOMContentLoaded', function() {
         return;
     }
 
+    // Check for ?photomap=<job_id>
+    var photomapJobId = params.get('photomap');
+    if (photomapJobId) {
+        showPhotoMapWindow(photomapJobId);
+        return;
+    }
+
     // Main view init
     document.getElementById('incident-name').addEventListener('input', updateProcessButton);
 
@@ -2362,6 +2396,89 @@ function closeSettings() {
         window.close();
     } else {
         window.location.href = window.location.pathname;
+    }
+}
+
+// ── Photo map window (?photomap=<job_id>) — v0.8.5 ───────────────────
+// Pop-out instead of embedding the used/unused map inline in the sidebar's
+// selected-job panel, which was pushing the completed-job list out of view.
+
+function showPhotoMapWindow(jobId) {
+    document.getElementById('main-view').style.display = 'none';
+    document.getElementById('photomap-view').style.display = 'flex';
+    loadPhotoMapWindow(jobId);
+}
+
+function closePhotoMap() {
+    if (window.opener) {
+        window.close();
+    } else {
+        window.location.href = window.location.pathname;
+    }
+}
+
+// Runs inside the pop-out window, which doesn't share the opener's
+// jobsCache — status_view works for any job regardless of status and
+// already returns display_name/photo_points/quality_warning, so one
+// targeted fetch is all this needs.
+function loadPhotoMapWindow(jobId) {
+    fetch('/plugins/tak_incident_overlay/status/' + jobId + '/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok) {
+                document.getElementById('photomap-content').innerHTML =
+                    '<div class="guide-content__title">Not found</div><p>This job could not be loaded.</p>';
+                return;
+            }
+            document.getElementById('photomap-job-name').textContent = data.display_name || '';
+            renderPhotoMapContent('photomap-content', data.display_name || data.job_id, data.photo_points, data.quality_warning);
+        })
+        .catch(function() {
+            document.getElementById('photomap-content').innerHTML =
+                '<div class="guide-content__title">Error</div><p>Could not load photo map data.</p>';
+        });
+}
+
+// Shared by the pop-out window and the popup-blocked modal fallback.
+// containerId's own element gets the title/warning; a child "<id>-map" div
+// is created for drawUsedPhotoMap to render into.
+function renderPhotoMapContent(containerId, title, points, qualityWarning) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    if (!points || points.length === 0) {
+        container.innerHTML = '<div class="guide-content__title">' + esc(title) + '</div>' +
+            '<p>No photo position data is available for this job.</p>';
+        return;
+    }
+    var html = '<div class="guide-content__title">' + esc(title) + '</div>';
+    if (qualityWarning) {
+        html += '<div class="banner-warn" style="margin-bottom:12px;">' + esc(qualityWarning) + '</div>';
+    }
+    html += '<div id="' + containerId + '-map"></div>';
+    container.innerHTML = html;
+    drawUsedPhotoMap(containerId + '-map', points);
+}
+
+// Called from the main window's selected-job panel.
+function openPhotoMap(jobId) {
+    var url = window.location.pathname + '?photomap=' + encodeURIComponent(jobId);
+    var popup = window.open(url, 'tak_photomap_' + jobId, 'width=760,height=640');
+    if (!popup) {
+        // Pop-ups blocked — render directly into the design-system modal.
+        // Runs in the main window, so jobsCache already has this job's
+        // photo_points/quality_warning (jobs_view enriches completed jobs)
+        // — no extra fetch needed.
+        var job = jobsCache.find(function(j) { return j.job_id === jobId; });
+        if (!job) return;
+        var html = '<div style="max-width:680px;">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">';
+        html += '<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);letter-spacing:0.12em;">TAK OVERLAY — PHOTO MAP</span>';
+        html += '<button class="btn btn-neutral btn--sm" onclick="document.getElementById(\'modal-overlay\').classList.remove(\'open\')">✕ CLOSE</button>';
+        html += '</div>';
+        html += '<div id="photomap-modal-body"></div>';
+        html += '</div>';
+        showModal(html);
+        renderPhotoMapContent('photomap-modal-body', job.display_name, job.photo_points, job.quality_warning);
     }
 }
 
@@ -3277,7 +3394,7 @@ async function onProcessClick() {
         var split = filterToGroup(fileArray, group.key);
         if (split.files.length === 0) continue; // GPS filter removed this group entirely
 
-        var jobName = name + ' [' + groupNameSuffix(group) + ']';
+        var jobName = name + '_' + groupNameSuffix(group);
         var groupLabel = 'JOB ' + (gi + 1) + ' OF ' + groupsToRun.length;
 
         var jobResult = await runOneJob(split.files, split.points, jobName, groupLabel);
@@ -3645,12 +3762,10 @@ function renderJobDetails(jobId) {
         html += '<div class="banner-warn" style="margin-top:8px;">' + esc(job.quality_warning) + '</div>';
     }
 
-    // v0.8.4: Used/unused photo map
+    // v0.8.5: Used/unused photo map — pop-out instead of embedded, so it
+    // no longer pushes the completed-job list out of view in the sidebar.
     if (job.status === 'completed' && job.photo_points && job.photo_points.length > 0) {
-        html += '<div style="margin-top:10px;">';
-        html += '<div class="section-label">PHOTO MAP</div>';
-        html += '<div id="photo-map-' + esc(job.job_id) + '"></div>';
-        html += '</div>';
+        html += '<button class="btn btn-neutral btn--sm btn--block" style="margin-top:10px;" onclick="openPhotoMap(\'' + esc(job.job_id) + '\')">⧉ PHOTO MAP</button>';
     }
 
     // Action buttons
@@ -3665,11 +3780,6 @@ function renderJobDetails(jobId) {
     html += '</div>';
 
     panel.innerHTML = html;
-
-    // Draw the used/unused photo map
-    if (job.status === 'completed' && job.photo_points && job.photo_points.length > 0) {
-        drawUsedPhotoMap('photo-map-' + job.job_id, job.photo_points);
-    }
 }
 
 function getModeLabel(job) {
