@@ -362,8 +362,8 @@ async function main() {
     var suffixes = sharedCamResult.groups.map(groupNameSuffix);
     check('shared-camera-string groups: job name suffixes are NOT identical',
         suffixes[0] !== suffixes[1], suffixes);
-    check('shared-camera-string groups: prefix preferred over the shared camera string',
-        suffixes.indexOf('MAX 4000×3000') !== -1 && suffixes.indexOf('IRX 640×512') !== -1, suffixes);
+    check('shared-camera-string groups: suffix is just the prefix, not dimensions/camera',
+        suffixes.indexOf('MAX') !== -1 && suffixes.indexOf('IRX') !== -1, suffixes);
 
     // groupNameSuffix fallbacks when there's no single clean prefix.
     check('groupNameSuffix: falls back to camera+dims when prefixes are ambiguous',
