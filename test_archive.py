@@ -16,6 +16,20 @@ Expected output:
     [PASS] mark_failed sets status and error
     [PASS] delete_job removes the record
     [PASS] purge_expired_jobs removes old jobs
+    [PASS] get_settings returns default retention_hours
+    [PASS] get_settings returns default thread_percent
+    [PASS] get_user_settings returns defaults for an unknown user
+    [PASS] save_user_settings persists per-user values
+    [PASS] get_retention_hours reflects saved global setting
+    [PASS] get_thread_percent reflects saved global setting
+    [PASS] save_global_settings does not disturb per-user settings
+    [PASS] read_photos_sidecar returns None before any sidecar is saved
+    [PASS] read_photos_sidecar returns what save_photos_sidecar wrote
+    [PASS] update_photos_sidecar mutates and persists the sidecar
+    [PASS] update_photos_sidecar write is visible to a fresh read
+    [PASS] update_photos_sidecar is a no-op when there is no sidecar yet
+    [PASS] delete_job removes the photo sidecar
+    [PASS] purge_expired_jobs removes the photo sidecar along with the job
     All tests passed.
 """
 
@@ -126,6 +140,98 @@ purged = archive.purge_expired_jobs()
 check('purge_expired_jobs removes old jobs',
       purged == 1 and archive.get_job(old_id) is None,
       f'purged={purged}')
+
+# ── Test 11: settings.json defaults (v0.8.1) ───────────────────────────────────
+default_global = archive.get_settings().get('global', {})
+check('get_settings returns default retention_hours',
+      default_global.get('retention_hours') == 72, default_global)
+check('get_settings returns default thread_percent',
+      default_global.get('thread_percent') == 50, default_global)
+
+# ── Test 12: per-user settings (v0.8.1) ────────────────────────────────────────
+test_user = 'test_archive_user'
+defaults = archive.get_user_settings(test_user)
+check('get_user_settings returns defaults for an unknown user',
+      defaults == {'units': 'metric', 'time_format': '24h',
+                   'highres_default': False, 'save_task_default': False},
+      defaults)
+
+archive.save_user_settings(test_user, {
+    'units': 'imperial', 'time_format': '12h',
+    'highres_default': True, 'save_task_default': True,
+})
+saved = archive.get_user_settings(test_user)
+check('save_user_settings persists per-user values',
+      saved.get('units') == 'imperial' and saved.get('time_format') == '12h',
+      saved)
+
+# ── Test 13: global settings — retention and thread percent (v0.8.1) ──────────
+archive.save_global_settings({'retention_hours': 48, 'thread_percent': 25})
+check('get_retention_hours reflects saved global setting',
+      archive.get_retention_hours() == 48, archive.get_retention_hours())
+check('get_thread_percent reflects saved global setting',
+      archive.get_thread_percent() == 25, archive.get_thread_percent())
+check('save_global_settings does not disturb per-user settings',
+      archive.get_user_settings(test_user).get('units') == 'imperial')
+
+# Restore defaults so this test file doesn't leave the node mid-job-run on 25%
+archive.save_global_settings({'retention_hours': 72, 'thread_percent': 50})
+
+# ── Test 14: photo sidecar CRUD (v0.8.3/v0.8.4) ────────────────────────────────
+sidecar_job_id = archive.create_job('Sidecar Test Job')
+check('read_photos_sidecar returns None before any sidecar is saved',
+      archive.read_photos_sidecar(sidecar_job_id) is None)
+
+points = [
+    {'name': 'DJI_0001.JPG', 'lat': 61.2, 'lon': -149.9, 'time': '2026:01:01 10:00:00'},
+    {'name': 'DJI_0002.JPG', 'lat': 61.21, 'lon': -149.91, 'time': '2026:01:01 10:00:05'},
+]
+archive.save_photos_sidecar(sidecar_job_id, points)
+read_back = archive.read_photos_sidecar(sidecar_job_id)
+check('read_photos_sidecar returns what save_photos_sidecar wrote',
+      read_back is not None and len(read_back) == 2 and
+      read_back[0]['name'] == 'DJI_0001.JPG', read_back)
+
+# ── Test 15: update_photos_sidecar (v0.8.4 used-flag update) ──────────────────
+def _mark_first_used(pts):
+    for p in pts:
+        p['used'] = (p['name'] == 'DJI_0001.JPG')
+
+updated = archive.update_photos_sidecar(sidecar_job_id, _mark_first_used)
+check('update_photos_sidecar mutates and persists the sidecar',
+      updated is not None and updated[0]['used'] is True and updated[1]['used'] is False,
+      updated)
+reread = archive.read_photos_sidecar(sidecar_job_id)
+check('update_photos_sidecar write is visible to a fresh read',
+      reread[0]['used'] is True and reread[1]['used'] is False, reread)
+
+no_sidecar_job_id = archive.create_job('No Sidecar Job')
+check('update_photos_sidecar is a no-op when there is no sidecar yet',
+      archive.update_photos_sidecar(no_sidecar_job_id, _mark_first_used) is None)
+archive.delete_job(no_sidecar_job_id)
+
+# ── Test 16: sidecar cleanup on delete_job and purge_expired_jobs ─────────────
+archive.delete_job(sidecar_job_id)
+check('delete_job removes the photo sidecar',
+      archive.read_photos_sidecar(sidecar_job_id) is None)
+
+purge_sidecar_job_id = archive.create_job('Expired Sidecar Job')
+archive.save_photos_sidecar(purge_sidecar_job_id, points)
+path = _ensure_index()
+with open(path, 'r+') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    try:
+        jobs = _read_index(f)
+        for j in jobs:
+            if j['job_id'] == purge_sidecar_job_id:
+                old_time = datetime.now(timezone.utc) - timedelta(hours=73)
+                j['created_at'] = old_time.isoformat()
+        _write_index(f, jobs)
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+archive.purge_expired_jobs()
+check('purge_expired_jobs removes the photo sidecar along with the job',
+      archive.read_photos_sidecar(purge_sidecar_job_id) is None)
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 print()

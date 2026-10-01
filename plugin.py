@@ -22,8 +22,8 @@ class Plugin(PluginBase):
             return render(request, self.template_path("app.html"), {
                 'plugin_version': '0.8.4',
                 'user_settings': user_settings,
-                'resize_target_standard': 2048,
-                'resize_target_high_res': 4000,
+                'resize_target_standard': archive.RESIZE_TARGET_STANDARD,
+                'resize_target_high_res': archive.RESIZE_TARGET_HIGH_RES,
             })
 
         @login_required

@@ -41,6 +41,8 @@ Job record schema:
                                              # (v0.7.8+)
         "file_size_bytes":     int | null,   # legacy MBTiles size; always null for v0.7.8+ jobs
         "geotiff_size_bytes":  int | null,   # RGB GeoTIFF size (v0.7+)
+        "gsd_cm_per_px":       float | null, # ground sample distance, metric (v0.8.4+)
+        "area_m2":             float | null, # covered area, metric (v0.8.4+)
         "error":               str | null
     }
 """
@@ -64,6 +66,16 @@ WORKING_SUBDIR  = 'working'
 INDEX_FILENAME  = 'index.json'
 SETTINGS_FILENAME = 'settings.json'
 PURGE_HOURS     = 72  # default retention, overridden by settings.json
+
+# Client-side resize targets (v0.8.2, Workstream A). The single source of
+# truth for the longest-side pixel target in both modes — plugin.py reads
+# these into the template context for the browser's resize worker, api.py
+# uses them to verify uploaded photo dimensions, and pipeline.py uses them
+# to decide WebODM's own resize_to. Previously each of those three modules
+# re-hardcoded the literals 2048/4000 independently; they agreed only by
+# coincidence, and changing one wouldn't have changed the others.
+RESIZE_TARGET_STANDARD = 2048
+RESIZE_TARGET_HIGH_RES = 4000
 
 # Default settings
 DEFAULT_SETTINGS = {
@@ -299,6 +311,60 @@ def get_thread_percent():
         return 50
 
 
+def _dir_size_bytes(path):
+    """Total size in bytes of every file under path, recursively. 0 if path doesn't exist."""
+    total = 0
+    if not os.path.isdir(path):
+        return 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                pass
+    return total
+
+
+def get_disk_usage():
+    """
+    Current disk use of the GeoTIFF archive and of retained WebODM tasks
+    (roadmap §9.2: "Show the current disk use of the archive and saved
+    tasks beside the [retention] setting" — a GeoTIFF is ~6-10 MB but a
+    saved WebODM task is ~630 MB, so retention length matters a lot more
+    when operators leave "Save WebODM task" on).
+
+    Returns {"archive_bytes": int, "saved_tasks_bytes": int, "saved_tasks_count": int}.
+    archive_bytes covers every file directly in the archive dir (GeoTIFFs,
+    legacy MBTiles, sidecars, index/settings — all small next to the
+    GeoTIFFs, not worth excluding). saved_tasks_bytes sums the WebODM
+    project directory (MEDIA_ROOT/project/<id>/) for every job that still
+    has retain_task=True and a webodm_project_id on record — these live
+    outside the plugin's own archive dir entirely.
+    """
+    archive_bytes = _dir_size_bytes(get_archive_dir())
+
+    saved_tasks_bytes = 0
+    saved_tasks_count = 0
+    try:
+        for job in get_all_jobs():
+            if job.get('retain_task') and job.get('webodm_project_id'):
+                project_dir = os.path.join(
+                    settings.MEDIA_ROOT, 'project', str(job['webodm_project_id'])
+                )
+                size = _dir_size_bytes(project_dir)
+                if size:
+                    saved_tasks_bytes += size
+                    saved_tasks_count += 1
+    except Exception as e:
+        log.warning('TAK Overlay: get_disk_usage could not total saved tasks: %s', e)
+
+    return {
+        'archive_bytes': archive_bytes,
+        'saved_tasks_bytes': saved_tasks_bytes,
+        'saved_tasks_count': saved_tasks_count,
+    }
+
+
 # ── Photo sidecar file (v0.8.3) ─────────────────────────────────────────────
 
 def get_photos_sidecar_path(job_id):
@@ -311,11 +377,27 @@ def save_photos_sidecar(job_id, points):
     Save the photo point list to a sidecar file next to the output.
     The sidecar file is <archive_dir>/<job_id>_photos.json.
     Points is a list of {name, lat, lon, time, used} dicts.
+
+    Locked the same way as index.json/settings.json (fcntl.flock) — there is
+    normally one writer per job-lifecycle stage (upload, then pipeline's
+    used-flag update at completion), but the lock still protects against a
+    concurrent read (status_view polling) seeing a half-written file, and
+    against two stages racing if that assumption is ever wrong.
     """
     path = get_photos_sidecar_path(job_id)
     try:
-        with open(path, 'w') as f:
-            json.dump(points, f, indent=2)
+        if not os.path.exists(path):
+            open(path, 'a').close()
+        with open(path, 'r+') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                f.truncate()
+                json.dump(points, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         log.info('TAK Overlay: saved photo sidecar for job %s (%d points)', job_id, len(points))
     except Exception as e:
         log.warning('TAK Overlay: could not save photo sidecar for job %s: %s', job_id, e)
@@ -331,9 +413,51 @@ def read_photos_sidecar(job_id):
         return None
     try:
         with open(path, 'r') as f:
-            return json.load(f)
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                content = f.read().strip()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        return json.loads(content) if content else None
     except Exception as e:
         log.warning('TAK Overlay: could not read photo sidecar for job %s: %s', job_id, e)
+        return None
+
+
+def update_photos_sidecar(job_id, mutate_fn):
+    """
+    Read-modify-write the sidecar under a single exclusive lock, so the read
+    and the write can't interleave with another writer (e.g. two pipeline
+    runs, or a read racing the update). mutate_fn(points) is called with the
+    current point list and must mutate it in place; nothing is written if
+    the sidecar doesn't exist yet. Used by pipeline.py to set each point's
+    `used` flag after ODM completes, instead of its own unguarded
+    open/read/open/write.
+
+    Returns the (possibly mutated) point list, or None if there was no
+    sidecar to update.
+    """
+    path = get_photos_sidecar_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r+') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                content = f.read().strip()
+                points = json.loads(content) if content else []
+                mutate_fn(points)
+                f.seek(0)
+                f.truncate()
+                json.dump(points, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        return points
+    except Exception as e:
+        log.warning('TAK Overlay: could not update photo sidecar for job %s: %s', job_id, e)
         return None
 
 
@@ -522,13 +646,22 @@ def get_running_job():
     return None
 
 
-def mark_completed(job_id, geotiff_path):
+def mark_completed(job_id, geotiff_path, gsd_cm_per_px=None, area_m2=None):
     """
     Mark a job as completed. Records the GeoTIFF file size.
 
     Args:
         job_id        (str): Job UUID.
         geotiff_path  (str): Path to the final RGB GeoTIFF file.
+        gsd_cm_per_px (float|None): Ground sample distance in cm/px,
+                                   from pipeline._compute_geotiff_stats()
+                                   (v0.8.4). None if it couldn't be computed —
+                                   the job panel just omits the row.
+        area_m2       (float|None): Covered area in square metres, same
+                                   source. Stored in metric only, per
+                                   roadmap §9.3 ("store and send metric
+                                   only") — the frontend's Units.formatGSD/
+                                   formatArea convert for display.
 
     v0.7.8: MBTiles output removed. Only GeoTIFF size is recorded now.
     Legacy field `file_size_bytes` (previously MBTiles size) is cleared on
@@ -545,6 +678,8 @@ def mark_completed(job_id, geotiff_path):
         completed_at=_now_iso(),
         file_size_bytes=None,
         geotiff_size_bytes=geotiff_size,
+        gsd_cm_per_px=gsd_cm_per_px,
+        area_m2=area_m2,
     )
     log.info(
         'TAK Overlay: job %s completed — geotiff %s bytes',

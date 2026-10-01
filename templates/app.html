@@ -68,6 +68,8 @@
             white-space: nowrap;
         }
         .header-meta .value { color: var(--text-bright); }
+        .header-meta .value.warn { color: var(--amber); }
+        .header-meta .value.err  { color: var(--red); }
         .nav-link {
             font-family: var(--mono); font-size: 10px; font-weight: 400;
             letter-spacing: 0.08em; text-transform: uppercase;
@@ -140,6 +142,15 @@
             font-family: var(--mono); font-size: 10px; font-weight: 700;
             letter-spacing: 0.12em; text-transform: uppercase;
             color: var(--text-dim); margin-bottom: 10px;
+        }
+        .section-label__meta {
+            font-weight: 400; letter-spacing: 0.05em; color: var(--text-dim);
+            float: right;
+        }
+        .photo-map-label {
+            min-height: 14px; margin-top: 4px; text-align: center;
+            font-family: var(--mono); font-size: 10px; color: var(--text-bright);
+            letter-spacing: 0.03em;
         }
 
         /* ── Form elements ──────────────────────────────────────── */
@@ -748,16 +759,7 @@
                                 <span class="switch__track"></span>
                             </label>
                             <span class="option-row__name">SAVE WEBODM TASK</span>
-                            <span class="option-row__hint">keep source task · purged at 72 h</span>
-                            <button class="option-row__info" onclick="openGuideSection('options')" title="More info">ⓘ</button>
-                        </div>
-                        <div class="option-row">
-                            <span class="switch" style="opacity:0.4;cursor:default;">
-                                <input type="checkbox" disabled checked>
-                                <span class="switch__track"></span>
-                            </span>
-                            <span class="option-row__name">THREADS</span>
-                            <span class="option-row__hint" id="hint-threads">— · AUTO</span>
+                            <span class="option-row__hint">keep source task · purged at <span data-len="purge-time">72 hours</span></span>
                             <button class="option-row__info" onclick="openGuideSection('options')" title="More info">ⓘ</button>
                         </div>
                     </div>
@@ -865,7 +867,7 @@
         <!-- Right: Sidebar -->
         <aside class="sidebar" aria-label="Job list">
             <div class="sidebar-jobs" id="sidebar-jobs">
-                <div class="section-label">JOBS</div>
+                <div class="section-label">JOBS <span class="section-label__meta" id="sidebar-purge-note"></span></div>
                 <div id="job-list-container">
                     <div class="empty-state" id="job-list-empty">
                         <div class="ico">⊘</div>
@@ -988,6 +990,10 @@
                         <button class="btn btn-neutral btn--sm" data-retention="720" onclick="setRetention(720)">30D</button>
                     </div>
                 </div>
+                <div class="details-row" id="disk-usage-row" style="display:none;">
+                    <span class="details-label">DISK USE</span>
+                    <span class="details-value" id="disk-usage-value">—</span>
+                </div>
                 <div class="details-row">
                     <span class="details-label">PROCESSING THREADS</span>
                     <div style="display:flex;gap:4px;" id="thread-buttons">
@@ -1048,7 +1054,11 @@ var settings = {
     units: 'metric',
     timeFormat: '24h',
     highResDefault: false,
-    saveTaskDefault: false
+    saveTaskDefault: false,
+    // Global (admin) settings — defaults here match archive.DEFAULT_SETTINGS
+    // until the real values arrive from GET settings/ (see loadGlobalSettings).
+    retentionHours: 72,
+    threadPercent: 50
 };
 
 // Override with server-provided user settings (passed from plugin.py template)
@@ -1141,6 +1151,26 @@ function parseTiffHeader(bytes, view, tiffStart) {
         return littleEndian ? view.getUint32(pos, true) : view.getUint32(pos, false);
     };
 
+    // TIFF 6.0 §2: a tag's value lives inline in its 4-byte value field only
+    // when (type size * count) <= 4 bytes; otherwise the 4 bytes are an
+    // offset (from the start of the TIFF header) to where the value
+    // actually lives. ASCII strings over 3 chars and all GPS/EXIF offset
+    // pointers (already handled separately below) are the common cases
+    // that need this; it was previously applied only to GPS rationals.
+    var TIFF_TYPE_SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8};
+    var resolveValuePos = function(valuePos, type, count) {
+        var size = (TIFF_TYPE_SIZE[type] || 1) * count;
+        if (size <= 4) return valuePos;
+        return tiffStart + read32(valuePos);
+    };
+    // SHORT (type 3) values are 2 bytes; LONG (type 4) are 4. Both can
+    // appear for ImageWidth/ImageLength depending on the camera, and a
+    // blind read32 silently returns the wrong value for a SHORT on a
+    // big-endian ("MM") file.
+    var readIntValue = function(valuePos, type) {
+        return type === 3 ? read16(valuePos) : read32(valuePos);
+    };
+
     // IFD offset
     var ifdOffset = read32(tiffStart + 4);
     var ifdPos = tiffStart + ifdOffset;
@@ -1187,7 +1217,7 @@ function parseTiffHeader(bytes, view, tiffStart) {
 
             if (tag === 0x0001) {
                 // GPSLatitudeRef
-                result.latRef = readAscii(bytes, valuePos, count);
+                result.latRef = readAscii(bytes, resolveValuePos(valuePos, type, count), count);
             }
             if (tag === 0x0002) {
                 // GPSLatitude (3 rationals)
@@ -1195,13 +1225,22 @@ function parseTiffHeader(bytes, view, tiffStart) {
             }
             if (tag === 0x0003) {
                 // GPSLongitudeRef
-                result.lonRef = readAscii(bytes, valuePos, count);
+                result.lonRef = readAscii(bytes, resolveValuePos(valuePos, type, count), count);
             }
             if (tag === 0x0004) {
                 // GPSLongitude
                 result.lon = readRationalDegrees(bytes, view, tiffStart, valuePos, littleEndian);
             }
         }
+
+        // Apply hemisphere sign. GPSLatitude/GPSLongitude are always stored
+        // as positive magnitudes — GPSLatitudeRef ('N'/'S') and
+        // GPSLongitudeRef ('E'/'W') say which hemisphere they're actually
+        // in. Deployments west of the prime meridian (e.g. Anchorage, ~149°W)
+        // or south of the equator need this or every coordinate comes out
+        // on the wrong side of 0.
+        if (result.lat != null && result.latRef === 'S') result.lat = -result.lat;
+        if (result.lon != null && result.lonRef === 'W') result.lon = -result.lon;
     }
 
     // Parse Exif IFD for DateTimeOriginal, Make, Model, dimensions
@@ -1217,16 +1256,17 @@ function parseTiffHeader(bytes, view, tiffStart) {
             var valuePos = entryPos + 8;
 
             if (tag === 0x9003) {
-                // DateTimeOriginal
-                result.time = readAscii(bytes, valuePos, count);
+                // DateTimeOriginal — ASCII "YYYY:MM:DD HH:MM:SS\0" (count 20),
+                // always offset-encoded since it never fits in 4 bytes.
+                result.time = readAscii(bytes, resolveValuePos(valuePos, type, count), count);
             }
             if (tag === 0xA002) {
-                // PixelXDimension (width)
-                result.width = read32(valuePos);
+                // PixelXDimension (width) — SHORT or LONG depending on camera
+                result.width = readIntValue(valuePos, type);
             }
             if (tag === 0xA003) {
                 // PixelYDimension (height)
-                result.height = read32(valuePos);
+                result.height = readIntValue(valuePos, type);
             }
         }
     }
@@ -1243,16 +1283,16 @@ function parseTiffHeader(bytes, view, tiffStart) {
         var valuePos = entryPos + 8;
 
         if (tag === 0x010F) {
-            result.make = readAscii(bytes, valuePos, count);
+            result.make = readAscii(bytes, resolveValuePos(valuePos, type, count), count);
         }
         if (tag === 0x0110) {
-            result.model = readAscii(bytes, valuePos, count);
+            result.model = readAscii(bytes, resolveValuePos(valuePos, type, count), count);
         }
         if (tag === 0x0100) {
-            result.width = read32(valuePos);
+            result.width = readIntValue(valuePos, type);
         }
         if (tag === 0x0101) {
-            result.height = read32(valuePos);
+            result.height = readIntValue(valuePos, type);
         }
     }
 
@@ -1316,6 +1356,9 @@ async function analyzePhotos(files) {
                 } catch(e) {}
             }
 
+            // Group by size and camera
+            var groupKey = width + '×' + height + '|' + (exif.camera || 'unknown');
+
             var point = {
                 name: file.name,
                 lat: exif.lat,
@@ -1323,14 +1366,13 @@ async function analyzePhotos(files) {
                 time: exif.time,
                 width: width,
                 height: height,
-                camera: exif.camera || (width + '×' + height)
+                camera: exif.camera || (width + '×' + height),
+                groupKey: groupKey
             };
             photoAnalysis.points.push(point);
 
-            // Group by size and camera
-            var groupKey = width + '×' + height + '|' + (exif.camera || 'unknown');
             if (!groupMap[groupKey]) {
-                groupMap[groupKey] = { width: width, height: height, count: 0, camera: exif.camera || '' };
+                groupMap[groupKey] = { key: groupKey, width: width, height: height, count: 0, camera: exif.camera || '' };
                 photoAnalysis.groups.push(groupMap[groupKey]);
             }
             groupMap[groupKey].count++;
@@ -1348,11 +1390,17 @@ async function analyzePhotos(files) {
 
         } catch(err) {
             // If we can't read the file, add it with no data
+            var fallbackKey = '0×0|unknown';
             photoAnalysis.points.push({
                 name: file.name, lat: null, lon: null, time: null,
-                width: 0, height: 0, camera: 'unknown'
+                width: 0, height: 0, camera: 'unknown', groupKey: fallbackKey
             });
             photoAnalysis.noGps.push(file.name);
+            if (!groupMap[fallbackKey]) {
+                groupMap[fallbackKey] = { key: fallbackKey, width: 0, height: 0, count: 0, camera: '' };
+                photoAnalysis.groups.push(groupMap[fallbackKey]);
+            }
+            groupMap[fallbackKey].count++;
         }
     }
 
@@ -1379,6 +1427,44 @@ function confirmMixedCameras() {
     msg += '\nKeep the largest group (' + groups[0].count + ' photos) and remove the rest?';
 
     return confirm(msg);
+}
+
+// Remove photos outside the largest camera group (operator confirmed via
+// confirmMixedCameras). Filters fileArray and keeps photoAnalysis in sync
+// (points/noGps/groups) so the picker stats, flight path map and upload
+// all agree on which photos remain.
+function filterToLargestCameraGroup(files) {
+    var groups = photoAnalysis.groups;
+    if (groups.length <= 1) return files;
+
+    var keepKey = groups[0].key;
+
+    // Filter files and points together by index — photoAnalysis.points[i]
+    // corresponds 1:1 to files[i] (built together, in order, in the same
+    // loop in analyzePhotos). Filtering by file name instead would wrongly
+    // keep (or drop) a photo whenever two different cameras happen to
+    // produce the same name — the realistic case here is a dual-sensor
+    // drone (e.g. Autel EVO II Dual) where both the visual and thermal
+    // streams use the same sequential DJI_000N.JPG-style naming, which is
+    // exactly the mixed-camera scenario this filter exists to resolve.
+    var filtered = [];
+    var keptPoints = [];
+    for (var i = 0; i < files.length; i++) {
+        var point = photoAnalysis.points[i];
+        if (point && point.groupKey === keepKey) {
+            filtered.push(files[i]);
+            keptPoints.push(point);
+        }
+    }
+
+    photoAnalysis.points = keptPoints;
+    photoAnalysis.noGps = keptPoints
+        .filter(function(p) { return p.lat == null || p.lon == null; })
+        .map(function(p) { return p.name; });
+    photoAnalysis.groups = [groups[0]];
+    photoAnalysis.mixedCameras = false;
+
+    return filtered;
 }
 
 // ── Flight path map (v0.8.3, Workstream E part 1) ─────────────
@@ -1421,10 +1507,28 @@ function drawFlightPathMap(containerId, points) {
     var mapW = 600, mapH = 400;
     var padding = 30;
 
-    // Equirectangular projection
+    // Equirectangular projection. A degree of longitude covers less ground
+    // than a degree of latitude away from the equator (by cos(latitude)) —
+    // stretching lon-range and lat-range independently to fill the canvas
+    // ignores that and visibly distorts the flight path shape, worse at
+    // higher latitude (e.g. ~0.48x at Anchorage's ~61°N). Scale both axes
+    // by the same factor, in the same cos(lat)-adjusted unit, and center
+    // the result instead.
+    var centreLat = (minLat + maxLat) / 2;
+    var cosLat = Math.cos(centreLat * Math.PI / 180) || 1;
+    var lonSpanAdj = (maxLon - minLon) * cosLat || 0.0001;
+    var latSpan = (maxLat - minLat) || 0.0001;
+    var availW = mapW - 2 * padding;
+    var availH = mapH - 2 * padding;
+    var mapScale = Math.min(availW / lonSpanAdj, availH / latSpan);
+    var drawW = lonSpanAdj * mapScale;
+    var drawH = latSpan * mapScale;
+    var offsetX = padding + (availW - drawW) / 2;
+    var offsetY = padding + (availH - drawH) / 2;
+
     function project(lat, lon) {
-        var x = padding + (lon - minLon) / (maxLon - minLon) * (mapW - 2 * padding);
-        var y = padding + (maxLat - lat) / (maxLat - minLat) * (mapH - 2 * padding);
+        var x = offsetX + (lon - minLon) * cosLat * mapScale;
+        var y = offsetY + (maxLat - lat) * mapScale;
         return { x: x, y: y };
     }
 
@@ -1444,7 +1548,10 @@ function drawFlightPathMap(containerId, points) {
     // Draw dots
     validPoints.forEach(function(p) {
         var pt = project(p.lat, p.lon);
-        svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="var(--text-dim)" style="cursor:pointer;" onclick="showPointInfo(\'' + esc(p.name) + '\')"/>';
+        svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="var(--text-dim)" style="cursor:pointer;" ' +
+            'onmouseenter="showPointInfo(\'' + esc(p.name) + '\', null, \'' + esc(containerId) + '\')" ' +
+            'onmouseleave="clearPointInfo(\'' + esc(containerId) + '\')" ' +
+            'onclick="showPointInfo(\'' + esc(p.name) + '\', null, \'' + esc(containerId) + '\')"/>';
     });
 
     // North arrow
@@ -1452,14 +1559,12 @@ function drawFlightPathMap(containerId, points) {
     svg += '<line x1="' + (mapW - 20) + '" y1="25" x2="' + (mapW - 20) + '" y2="45" stroke="var(--text-dim)" stroke-width="1"/>';
     svg += '<polygon points="' + (mapW - 20) + ',20 ' + (mapW - 25) + ',30 ' + (mapW - 15) + ',30" fill="var(--text-dim)"/>';
 
-    // Scale bar
-    var centreLat = (minLat + maxLat) / 2;
-    var metresPerDegLon = 111320 * Math.cos(centreLat * Math.PI / 180);
-    var metresPerDegLat = 110540;
+    // Scale bar — reuses the same mapScale (pixels per cos(lat)-adjusted
+    // degree) as project() above, so the bar matches what's actually drawn.
+    // 1 degree ≈ 111,320 m (equatorial; close enough for a scale bar).
     var scaleBarMetres = 20; // 20 m in metric, 50 ft in imperial
     if (settings.units === 'imperial') scaleBarMetres = 15.24; // 50 ft
-    var scaleBarDeg = scaleBarMetres / metresPerDegLon;
-    var scaleBarPx = scaleBarDeg / (maxLon - minLon) * (mapW - 2 * padding);
+    var scaleBarPx = (scaleBarMetres / 111320) * mapScale;
     svg += '<line x1="' + padding + '" y1="' + (mapH - 15) + '" x2="' + (padding + scaleBarPx) + '" y2="' + (mapH - 15) + '" stroke="var(--text-dim)" stroke-width="2"/>';
     svg += '<text x="' + (padding + scaleBarPx / 2) + '" y="' + (mapH - 20) + '" fill="var(--text-dim)" font-family="var(--mono)" font-size="9" text-anchor="middle">' + Units.formatScaleBar(scaleBarPx, scaleBarMetres / scaleBarPx) + '</text>';
 
@@ -1471,12 +1576,24 @@ function drawFlightPathMap(containerId, points) {
     svg += '<span>— FLIGHT PATH</span>';
     svg += '</div>';
 
+    // Hover/click label — filled in by showPointInfo() below
+    svg += '<div id="' + esc(containerId) + '-label" class="photo-map-label"></div>';
+
     container.innerHTML = svg;
 }
 
-function showPointInfo(name) {
-    // Could show a tooltip; for now just log
-    console.log('Photo:', name);
+// Point to (or tap) a dot to show its file name and status, per the photo
+// map spec. status is null for the pre-upload flight path map (nothing is
+// "used" yet) and 'USED'/'NOT USED' for the post-processing map.
+function showPointInfo(name, status, containerId) {
+    var label = document.getElementById(containerId + '-label');
+    if (!label) return;
+    label.textContent = status ? (name + ' · ' + status) : name;
+}
+
+function clearPointInfo(containerId) {
+    var label = document.getElementById(containerId + '-label');
+    if (label) label.textContent = '';
 }
 
 // ── Used/unused photo map (v0.8.4, Workstream E part 2) ─────────
@@ -1519,10 +1636,24 @@ function drawUsedPhotoMap(containerId, points) {
     var mapW = 600, mapH = 400;
     var padding = 30;
 
-    // Equirectangular projection
+    // Equirectangular projection — see drawFlightPathMap for why both axes
+    // share one cos(lat)-adjusted scale instead of being stretched
+    // independently to fill the canvas.
+    var centreLat = (minLat + maxLat) / 2;
+    var cosLat = Math.cos(centreLat * Math.PI / 180) || 1;
+    var lonSpanAdj = (maxLon - minLon) * cosLat || 0.0001;
+    var latSpan = (maxLat - minLat) || 0.0001;
+    var availW = mapW - 2 * padding;
+    var availH = mapH - 2 * padding;
+    var mapScale = Math.min(availW / lonSpanAdj, availH / latSpan);
+    var drawW = lonSpanAdj * mapScale;
+    var drawH = latSpan * mapScale;
+    var offsetX = padding + (availW - drawW) / 2;
+    var offsetY = padding + (availH - drawH) / 2;
+
     function project(lat, lon) {
-        var x = padding + (lon - minLon) / (maxLon - minLon) * (mapW - 2 * padding);
-        var y = padding + (maxLat - lat) / (maxLat - minLat) * (mapH - 2 * padding);
+        var x = offsetX + (lon - minLon) * cosLat * mapScale;
+        var y = offsetY + (maxLat - lat) * mapScale;
         return { x: x, y: y };
     }
 
@@ -1546,12 +1677,17 @@ function drawUsedPhotoMap(containerId, points) {
     // Draw dots — used = filled green, unused = hollow red ring
     validPoints.forEach(function(p) {
         var pt = project(p.lat, p.lon);
+        var statusLabel = p.used ? 'USED' : 'NOT USED';
+        var hoverAttrs =
+            'onmouseenter="showPointInfo(\'' + esc(p.name) + '\', \'' + statusLabel + '\', \'' + esc(containerId) + '\')" ' +
+            'onmouseleave="clearPointInfo(\'' + esc(containerId) + '\')" ' +
+            'onclick="showPointInfo(\'' + esc(p.name) + '\', \'' + statusLabel + '\', \'' + esc(containerId) + '\')"';
         if (p.used) {
             // Filled green dot
-            svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="var(--green)" style="cursor:pointer;" onclick="showPointInfo(\'' + esc(p.name) + '\')"/>';
+            svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="var(--green)" style="cursor:pointer;" ' + hoverAttrs + '/>';
         } else {
             // Hollow red ring
-            svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="none" stroke="var(--red)" stroke-width="2" style="cursor:pointer;" onclick="showPointInfo(\'' + esc(p.name) + '\')"/>';
+            svg += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="none" stroke="var(--red)" stroke-width="2" style="cursor:pointer;" ' + hoverAttrs + '/>';
         }
     });
 
@@ -1560,13 +1696,10 @@ function drawUsedPhotoMap(containerId, points) {
     svg += '<line x1="' + (mapW - 20) + '" y1="25" x2="' + (mapW - 20) + '" y2="45" stroke="var(--text-dim)" stroke-width="1"/>';
     svg += '<polygon points="' + (mapW - 20) + ',20 ' + (mapW - 25) + ',30 ' + (mapW - 15) + ',30" fill="var(--text-dim)"/>';
 
-    // Scale bar
-    var centreLat = (minLat + maxLat) / 2;
-    var metresPerDegLon = 111320 * Math.cos(centreLat * Math.PI / 180);
+    // Scale bar — same mapScale as project() above (see drawFlightPathMap)
     var scaleBarMetres = 20;
     if (settings.units === 'imperial') scaleBarMetres = 15.24;
-    var scaleBarDeg = scaleBarMetres / metresPerDegLon;
-    var scaleBarPx = scaleBarDeg / (maxLon - minLon) * (mapW - 2 * padding);
+    var scaleBarPx = (scaleBarMetres / 111320) * mapScale;
     svg += '<line x1="' + padding + '" y1="' + (mapH - 15) + '" x2="' + (padding + scaleBarPx) + '" y2="' + (mapH - 15) + '" stroke="var(--text-dim)" stroke-width="2"/>';
     svg += '<text x="' + (padding + scaleBarPx / 2) + '" y="' + (mapH - 20) + '" fill="var(--text-dim)" font-family="var(--mono)" font-size="9" text-anchor="middle">' + Units.formatScaleBar(scaleBarPx, scaleBarMetres / scaleBarPx) + '</text>';
 
@@ -1578,6 +1711,9 @@ function drawUsedPhotoMap(containerId, points) {
     svg += '<span style="color:var(--red);">○ NOT USED ' + unusedCount + '</span>';
     svg += '<span>— FLIGHT PATH</span>';
     svg += '</div>';
+
+    // Hover/click label — filled in by showPointInfo() above
+    svg += '<div id="' + esc(containerId) + '-label" class="photo-map-label"></div>';
 
     container.innerHTML = svg;
 }
@@ -1761,12 +1897,28 @@ function injectAppnSegments(resizedBytes, appnSegments) {
     // Find SOI in resized JPEG
     if (resizedBytes[0] !== 0xFF || resizedBytes[1] !== 0xD8) return resizedBytes;
 
-    // Build new byte array: SOI + APPn segments + rest of resized JPEG (after SOI)
+    // The canvas encoder (convertToBlob) writes its own fresh APP0/JFIF
+    // segment right after its SOI. We're about to splice in the original
+    // photo's APPn segments (which already include its own APP0, EXIF,
+    // etc.) — skip past the encoder's own leading APPn segments first, or
+    // the result ends up with two APP0 markers (non-conformant JFIF; most
+    // decoders tolerate it, but there's no reason to produce it).
+    var skipTo = 2;
+    while (skipTo < resizedBytes.length - 3) {
+        if (resizedBytes[skipTo] !== 0xFF) break;
+        var m = resizedBytes[skipTo + 1];
+        if (m < 0xE0 || m > 0xEF) break; // not an APPn marker — stop skipping
+        var segLen = (resizedBytes[skipTo + 2] << 8) | resizedBytes[skipTo + 3];
+        skipTo += 2 + segLen;
+    }
+
+    // Build new byte array: SOI + APPn segments + rest of resized JPEG
+    // (after its own leading APPn segments, which we just skipped past)
     var totalLength = 2; // SOI
     for (var i = 0; i < appnSegments.length; i++) {
         totalLength += appnSegments[i].length;
     }
-    totalLength += resizedBytes.length - 2; // rest after SOI
+    totalLength += resizedBytes.length - skipTo;
 
     var result = new Uint8Array(totalLength);
     var pos = 0;
@@ -1781,8 +1933,8 @@ function injectAppnSegments(resizedBytes, appnSegments) {
         pos += appnSegments[i].length;
     }
 
-    // Rest of resized JPEG (after SOI)
-    result.set(resizedBytes.slice(2), pos);
+    // Rest of resized JPEG (after its own leading APPn segments)
+    result.set(resizedBytes.slice(skipTo), pos);
 
     return result;
 }
@@ -1933,13 +2085,40 @@ var Units = {
             'limit-std':    '150',
             'limit-high':   '300',
             // Section 05
-            'error-typical': '±5 ft',
-            'error-extreme': '±25 ft',
-            'purge-time':    '72 hours'
+            'error-typical': settings.units === 'imperial' ? '±5 ft' : '±1.5 m',
+            'error-extreme': settings.units === 'imperial' ? '±25 ft' : '±7.5 m',
+            'purge-time':    formatRetentionLabel(settings.retentionHours),
+            'thread-percent': (settings.threadPercent || 50) + '%'
         };
         return ex[key] || '';
     }
 };
+
+// Admin-configured retention (settings.retentionHours, from GET settings/
+// global.retention_hours) as operator-facing text: "72 hours" / "7 days" /
+// "30 days". Used anywhere the UI used to say a hardcoded "72 hours".
+function formatRetentionLabel(hours) {
+    hours = hours || 72;
+    if (hours % 24 === 0 && hours >= 168) {
+        var days = hours / 24;
+        return days + (days === 1 ? ' day' : ' days');
+    }
+    return hours + ' hours';
+}
+
+function formatPurgeIn(createdAtIso) {
+    var created = new Date(createdAtIso);
+    if (isNaN(created.getTime())) return '—';
+    var purgeAt = created.getTime() + settings.retentionHours * 3600 * 1000;
+    var remainingMs = purgeAt - Date.now();
+    if (remainingMs <= 0) return 'pending purge';
+    var remainingH = Math.ceil(remainingMs / 3600000);
+    if (remainingH >= 24 && remainingH % 24 === 0) {
+        var d = remainingH / 24;
+        return d + (d === 1 ? ' day' : ' days');
+    }
+    return remainingH + ' h';
+}
 
 // ── Guide sections data ───────────────────────────────────────────
 var GUIDE_SECTIONS = [
@@ -1982,6 +2161,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     checkNodeStatus();
     setInterval(checkNodeStatus, 30000);
+
+    loadGlobalSettings();
+    refreshSidebarPurgeNote();
 
     restoreRunningJob();
     renderQuickRef('quick-ref-body');
@@ -2029,6 +2211,20 @@ function loadSettingsUI() {
             // Admin-only elements
             var isStaff = !!data.is_staff;
             document.getElementById('admin-badge').style.display = isStaff ? '' : 'none';
+
+            // Disk use (staff only — api.py only computes it for staff)
+            var diskRow = document.getElementById('disk-usage-row');
+            if (isStaff && data.disk_usage) {
+                var du = data.disk_usage;
+                var archiveMB = (du.archive_bytes / 1024 / 1024).toFixed(0);
+                var savedMB = (du.saved_tasks_bytes / 1024 / 1024).toFixed(0);
+                document.getElementById('disk-usage-value').textContent =
+                    archiveMB + ' MB archive · ' + savedMB + ' MB in ' +
+                    du.saved_tasks_count + ' saved task(s)';
+                diskRow.style.display = '';
+            } else {
+                diskRow.style.display = 'none';
+            }
 
             // Retention buttons
             var retention = global.retention_hours || 72;
@@ -2159,7 +2355,32 @@ function applySettings(userSettings, globalSettings) {
         if (userSettings.highres_default !== undefined) settings.highResDefault = userSettings.highres_default;
         if (userSettings.save_task_default !== undefined) settings.saveTaskDefault = userSettings.save_task_default;
     }
+    if (globalSettings) {
+        if (globalSettings.retention_hours) settings.retentionHours = globalSettings.retention_hours;
+        if (globalSettings.thread_percent) settings.threadPercent = globalSettings.thread_percent;
+    }
     refreshUnitPlaceholders();
+    refreshSidebarPurgeNote();
+    if (selectedJobId) renderJobDetails(selectedJobId);
+}
+
+// Loads the admin-configured global settings (retention, thread percent)
+// into the main window on first page load — previously only the settings
+// popup ever fetched these, so the main view's "72 h" text and thread
+// count never reflected an admin's actual configuration (v0.8.4 fix).
+function loadGlobalSettings() {
+    fetch('/plugins/tak_incident_overlay/settings/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok) return;
+            applySettings(null, data.global || {});
+        })
+        .catch(function() {});
+}
+
+function refreshSidebarPurgeNote() {
+    var el = document.getElementById('sidebar-purge-note');
+    if (el) el.textContent = 'PURGE ' + formatRetentionLabel(settings.retentionHours).toUpperCase();
 }
 
 function refreshUnitPlaceholders() {
@@ -2212,6 +2433,7 @@ function showGuideSection(sectionId) {
     var bodyEl = document.getElementById('guide-content-body');
     titleEl.textContent = GUIDE_SECTIONS[idx].title;
     bodyEl.innerHTML = renderGuideContent(sectionId);
+    fillUnitPlaceholdersInElement(bodyEl);
 
     // Update prev/next
     document.getElementById('guide-prev').style.visibility = idx === 0 ? 'hidden' : 'visible';
@@ -2325,7 +2547,7 @@ function guideSectionCapture() {
     html += '<p>Set altitude from the highest point of the target, not the takeoff point.</p>';
     html += '<p>Fly 75% front overlap and 65% side overlap. Most mission-planning apps calculate this.</p>';
     html += '<p>Fly an S-pattern grid over the target at consistent altitude. Parallel passes across the area, reversing direction at each end.</p>';
-    html += '<p>Get GPS lock before takeoff. Take a single image on the ground to establish a baseline.</p>';
+    html += '<p>Get GPS lock before takeoff. Take a single photo on the ground to establish a baseline.</p>';
     html += '<p>Use visual JPEG photos only. Remove thermal photos before upload.</p>';
     html += '<p>Limit: 150 photos per job. 300 with high-capacity mode.</p>';
     html += '<div class="guide-note">Regulatory note: Always comply with applicable FAA altitude regulations. In uncontrolled airspace the standard sUAS ceiling is <span data-len="alt-ceiling"></span> AGL.</div>';
@@ -2382,7 +2604,7 @@ function guideSectionUpload() {
     html += '<div class="guide-fix-row">';
     html += '<strong>High-Resolution mode</strong> — pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Visibly finer detail. Runtime ~10 min for a 65-photo job.<br><br>';
     html += '<strong>Terrain correction</strong> — runs full 3D reconstruction. Corrects geometric error from elevation change and tall vertical features. Runtime ~35 min.<br><br>';
-    html += '<strong>Save WebODM task</strong> — retains the source WebODM project for inspection. Cleared at the 72-hour purge along with the job record.';
+    html += '<strong>Save WebODM task</strong> — retains the source WebODM project for inspection. Cleared with the job record <span data-len="purge-time">72 hours</span> after the job completes.';
     html += '</div>';
     fillUnitPlaceholders(html);
     return html;
@@ -2395,8 +2617,8 @@ function guideSectionOptions() {
     html += '<p><strong>High-capacity mode</strong> — raises the photo limit from 150 to 300 per job.</p>';
     html += '<p><strong>High-Resolution mode</strong> — pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Visibly finer ground detail at about 2× runtime.</p>';
     html += '<p><strong>Terrain correction</strong> — disables fast-orthophoto. ODM runs the full SfM pipeline (dense MVS + textured mesh + orthorectification). Corrects geometric error from terrain variation and tall vertical features. About 35 min for 65 photos.</p>';
-    html += '<p><strong>Save WebODM task</strong> — retains the WebODM project after the pipeline completes. A direct link appears in the job row. Purged at 72 hours with the job record.</p>';
-    html += '<p><strong>Processing threads</strong> — automatic. The plugin reads the processing node CPU threads and uses 50%. Changed only by an admin in Settings.</p>';
+    html += '<p><strong>Save WebODM task</strong> — retains the WebODM project after the pipeline completes. A direct link appears in the job row. Purged with the job record <span data-len="purge-time">72 hours</span> after the job completes.</p>';
+    html += '<p><strong>Processing threads</strong> — automatic. The plugin reads the processing node CPU threads and uses <span data-len="thread-percent">50%</span>. Changed only by an admin in Settings.</p>';
     fillUnitPlaceholders(html);
     return html;
 }
@@ -2409,8 +2631,10 @@ function guideSectionImport() {
     html += '<p>Verified compatible with <strong>CloudTAK</strong> and <strong>TAKAware</strong>.</p>';
     html += '<p><strong>CloudTAK:</strong> open <strong>Overlay Tool</strong> > <strong>"+"</strong> > <strong>"Your Files"</strong>, then use the <strong>"Upload Icon"</strong> to add the GeoTIFF.</p>';
     html += '<div class="guide-warning" style="background:rgba(224,58,58,0.08);border-color:rgba(224,58,58,0.3);color:var(--red);">';
-    html += '<strong>Not to scale</strong> — unless the sUAS used RTK positioning, this overlay is <strong>not geometrically accurate</strong> and must not be used for measurements, boundary determinations, or any purpose requiring positional precision. Based on observed results, expect typical positional error of <strong>±5 ft</strong> with extremes up to <strong>±25 ft</strong>. Use for situational awareness only.</div>';
-    html += '<div class="guide-note"><strong>72-hour purge.</strong> The GeoTIFF is automatically deleted from the server 72 hours after the job completes.</div>';
+    html += '<strong>Not to scale.</strong> Do not use this overlay for measurements or boundary determinations. ';
+    html += 'Typical position error is <strong><span data-len="error-typical">±5 ft</span></strong>, up to <strong><span data-len="error-extreme">±25 ft</span></strong> at the extreme. ';
+    html += 'RTK positioning on the sUAS improves this. Use the overlay for situational awareness only.</div>';
+    html += '<div class="guide-note"><strong>Auto-purge.</strong> The GeoTIFF is automatically deleted from the server <span data-len="purge-time">72 hours</span> after the job completes.</div>';
     fillUnitPlaceholders(html);
     return html;
 }
@@ -2422,7 +2646,7 @@ function guideSectionTroubleshooting() {
     html += '<p><strong>Node offline.</strong> Check the processing node in WebODM. Go to Administration > Processing Nodes and confirm the node shows as online.</p>';
     html += '<p><strong>Job stuck in queue.</strong> The node queue may be full. Check the node status in WebODM Processing Nodes panel. Wait for queued jobs to process in order.</p>';
     html += '<p><strong>Upload fails.</strong> Check the upload size limit in WebODM .env. Confirm DATA_UPLOAD_MAX_MEMORY_SIZE is set. Check available disk space.</p>';
-    html += '<p><strong>Output files disappeared.</strong> The 72-hour auto-purge removes old files. Check the job creation time.</p>';
+    html += '<p><strong>Output files disappeared.</strong> The auto-purge removes files <span data-len="purge-time">72 hours</span> after the job completes. Check the job creation time.</p>';
     html += '<p><strong>Photos rejected: no GPS.</strong> The photos do not have embedded GPS coordinates. The drone must have GPS lock during flight. Check with exiftool.</p>';
     html += '<p><strong>Photos rejected: not JPEG.</strong> Only JPEG files are accepted. Convert RAW, HEIC, PNG, or TIFF to JPEG before submitting.</p>';
     return html;
@@ -2647,6 +2871,34 @@ async function onProcessClick() {
             resetToIdle();
             return;
         }
+        fileArray = filterToLargestCameraGroup(fileArray);
+        if (fileArray.length === 0) {
+            showFlash('flash-upload', 'All photos were removed. Please select photos from a single camera.');
+            resetToIdle();
+            return;
+        }
+    }
+
+    // Check for duplicate file names (e.g. DJI_0001.JPG from two SD cards).
+    // Not fatal — the server prefixes each saved file with its upload index
+    // so duplicate names never collide on disk — but worth a heads-up in
+    // case the operator selected the same folder twice by mistake.
+    if (photoAnalysis.duplicates.length > 0) {
+        var uniqueDupes = photoAnalysis.duplicates.filter(function(name, i) {
+            return photoAnalysis.duplicates.indexOf(name) === i;
+        });
+        var proceedDupe = confirm(
+            uniqueDupes.length + ' duplicate file name(s) found: ' +
+            uniqueDupes.slice(0, 3).join(', ') +
+            (uniqueDupes.length > 3 ? '...' : '') +
+            '\n\nThis is normal when merging photos from two cameras or SD cards — ' +
+            'each file is still uploaded and processed separately. ' +
+            'Continue, or cancel to check your selection first?'
+        );
+        if (!proceedDupe) {
+            resetToIdle();
+            return;
+        }
     }
 
     // Check for photos without GPS
@@ -2661,10 +2913,23 @@ async function onProcessClick() {
             resetToIdle();
             return;
         }
-        // Filter out photos without GPS
-        fileArray = fileArray.filter(function(f) {
-            return photoAnalysis.noGps.indexOf(f.name) === -1;
-        });
+        // Filter out photos without GPS. fileArray and photoAnalysis.points
+        // are kept in lockstep by index (they're built 1:1 in analyzePhotos)
+        // rather than matched by name — a name-based filter would (a) leave
+        // stale "ghost" entries in photoAnalysis.points for photos that are
+        // no longer actually uploaded, inflating the used/total counts the
+        // server derives from the sidecar, and (b) misfire if two different
+        // photos happen to share a file name.
+        var gpsFilteredFiles = [];
+        var gpsFilteredPoints = [];
+        for (var gpsIdx = 0; gpsIdx < fileArray.length; gpsIdx++) {
+            var gpsPoint = photoAnalysis.points[gpsIdx];
+            if (gpsPoint && (gpsPoint.lat == null || gpsPoint.lon == null)) continue;
+            gpsFilteredFiles.push(fileArray[gpsIdx]);
+            if (gpsPoint) gpsFilteredPoints.push(gpsPoint);
+        }
+        fileArray = gpsFilteredFiles;
+        photoAnalysis.points = gpsFilteredPoints;
         if (fileArray.length === 0) {
             showFlash('flash-upload', 'All photos were removed. Please select photos with GPS data.');
             resetToIdle();
@@ -2725,7 +2990,7 @@ async function onProcessClick() {
     if (usedClientResize && resizeInfo && resizeInfo.results.length > 0) {
         for (var i = 0; i < resizeInfo.results.length; i++) {
             var r = resizeInfo.results[i];
-            fd.append('images[]', r.blob, r.file.name);
+            fd.append('images[]', r.blob, r.fileName);
         }
     } else {
         for (var i = 0; i < fileArray.length; i++) {
@@ -2783,6 +3048,31 @@ async function onProcessClick() {
 
 // ── Node status ────────────────────────────────────────────────────
 
+// Threshold color for a header metric value. 'warn'/'err'/'' — applied as a
+// class, never an inline style, per the design system (section 4.5).
+function metricColor(kind, value) {
+    if (value == null) return '';
+    if (kind === 'queue') {
+        if (value >= 3) return 'err';
+        if (value >= 1) return 'warn';
+        return '';
+    }
+    if (kind === 'mem') {
+        if (value >= 90) return 'err';
+        if (value >= 75) return 'warn';
+        return '';
+    }
+    return '';
+}
+
+function setHeaderMetric(id, text, colorClass) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('warn', 'err');
+    if (colorClass) el.classList.add(colorClass);
+}
+
 function checkNodeStatus() {
     fetch('/plugins/tak_incident_overlay/node-status/')
         .then(function(r) { return r.json(); })
@@ -2800,6 +3090,26 @@ function checkNodeStatus() {
                 label.textContent = 'NODE OFFLINE';
             }
             document.getElementById('hdr-node').textContent = data.name || '—';
+
+            // v0.8.4: QUEUE / CPU THREADS / MEM, from the same /info probe.
+            // Also stored on nodeInfo so other displays (THREADS hint,
+            // running-job sub-line, Settings' thread-calc) share one value
+            // instead of each re-deriving it differently.
+            nodeInfo.online        = !!data.online;
+            nodeInfo.name          = data.name || '';
+            nodeInfo.queueCount    = data.queue_count;
+            nodeInfo.cpuCores      = data.cpu_threads;
+            nodeInfo.memoryPercent = data.mem_percent;
+
+            setHeaderMetric('hdr-queue',
+                data.queue_count != null ? String(data.queue_count) : '—',
+                metricColor('queue', data.queue_count));
+            setHeaderMetric('hdr-cpu',
+                data.cpu_threads != null ? String(data.cpu_threads) : '—',
+                '');
+            setHeaderMetric('hdr-mem',
+                data.mem_percent != null ? Math.round(data.mem_percent) + '%' : '—',
+                metricColor('mem', data.mem_percent));
         })
         .catch(function() {});
 }
@@ -2859,8 +3169,24 @@ function pollStatus() {
 
 var PHASE_ORDER = ['prepare', 'upload', 'queued', 'processing', 'finalize', 'reproject', 'export'];
 
+// pipeline.py's archive.update_job(phase=...) calls use human-readable
+// phase names ('Queued', 'Processing', 'Finalizing', 'Reprojecting',
+// 'Exporting GeoTIFF') since job.phase is also shown as-is in the job row
+// tag and the running-panel stage label. The phase track below instead
+// keys its segments by the short, fixed PHASE_ORDER names above — this
+// maps one to the other so the track actually advances.
+var PHASE_NAME_MAP = {
+    'queued':            'queued',
+    'processing':        'processing',
+    'finalizing':        'finalize',
+    'reprojecting':      'reproject',
+    'exporting geotiff': 'export'
+};
+
 function updatePhaseTrack(currentPhase) {
-    var idx = PHASE_ORDER.indexOf(currentPhase.toLowerCase());
+    var key = currentPhase.toLowerCase();
+    key = PHASE_NAME_MAP[key] || key;
+    var idx = PHASE_ORDER.indexOf(key);
     if (idx === -1) return;
 
     PHASE_ORDER.forEach(function(phase, i) {
@@ -3039,8 +3365,17 @@ function renderJobDetails(jobId) {
     if (job.geotiff_size_bytes) {
         html += '<div class="details-row"><span class="details-label">SIZE</span><span class="details-value">' + formatSize(job.geotiff_size_bytes) + '</span></div>';
     }
+    if (job.gsd_cm_per_px != null) {
+        html += '<div class="details-row"><span class="details-label">GSD</span><span class="details-value">' + Units.formatGSD(job.gsd_cm_per_px) + '</span></div>';
+    }
+    if (job.area_m2 != null) {
+        html += '<div class="details-row"><span class="details-label">AREA</span><span class="details-value">' + Units.formatArea(job.area_m2) + '</span></div>';
+    }
     if (job.created_at) {
         html += '<div class="details-row"><span class="details-label">CREATED</span><span class="details-value">' + formatDate(job.created_at) + '</span></div>';
+        if (job.status !== 'running') {
+            html += '<div class="details-row"><span class="details-label">PURGE IN</span><span class="details-value">' + formatPurgeIn(job.created_at) + '</span></div>';
+        }
     }
 
     // v0.8.4: Quality warning
@@ -3162,7 +3497,7 @@ function showProcessPhase() {
     if (document.getElementById('quality-mode-toggle').checked) modes.push('HIGH-RESOLUTION');
     if (document.getElementById('terrain-correction-toggle').checked) modes.push('TERRAIN CORRECTION');
     var modeStr = modes.length ? modes.join(' + ') : 'STANDARD';
-    document.getElementById('running-job-sub').textContent = n + ' PHOTOS · ' + modeStr + ' · ' + (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * 0.5)) : '—') + ' THREADS';
+    document.getElementById('running-job-sub').textContent = n + ' PHOTOS · ' + modeStr + ' · ' + (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * settings.threadPercent / 100)) : '—') + ' THREADS';
 
     // Start elapsed timer
     jobStartTime = Date.now();

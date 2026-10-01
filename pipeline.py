@@ -249,7 +249,9 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     # ALL imports inside — see module docstring
     # =====================================================================
     import logging
+    import math
     import os
+    import re
     import shutil
     import subprocess
     import time
@@ -327,7 +329,12 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     _thread_percent = archive.get_thread_percent()
     _node_threads = _get_node_cpu_threads()
     if _node_threads:
-        MAX_CONCURRENCY = max(1, round(_node_threads * _thread_percent / 100))
+        # Round-half-up, not Python's round() (round-half-to-even / banker's
+        # rounding). Decided here per roadmap §9.2: an admin picking 50% on
+        # a 5-thread node expects 3 threads, not round()'s 2 — half-to-even
+        # is the right default for statistical aggregation, not for a
+        # single human-facing percentage setting like this one.
+        MAX_CONCURRENCY = max(1, math.floor(_node_threads * _thread_percent / 100 + 0.5))
         logger.info(
             f"[TAK] {job_id}: Node reports {_node_threads} CPU threads — "
             f"using {_thread_percent}% = {MAX_CONCURRENCY} threads"
@@ -377,7 +384,7 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     if client_resized:
         RESIZE_TO = -1
     else:
-        RESIZE_TO = 4000 if quality_mode else 2048
+        RESIZE_TO = archive.RESIZE_TARGET_HIGH_RES if quality_mode else archive.RESIZE_TARGET_STANDARD
 
     # =====================================================================
     # Nested helpers — share scope (subprocess, logger, etc.) via closure
@@ -459,6 +466,64 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         )
         if result.stderr:
             logger.debug(f"[TAK] gdal_translate (geotiff) stderr: {result.stderr.strip()}")
+
+    def _compute_geotiff_stats(geotiff_path):
+        """
+        Read the final GeoTIFF's extent and pixel size via `gdalinfo -json`
+        and derive a ground-sample-distance (cm/px) and covered area (m²)
+        for the job panel (roadmap §9.3/§4.3: "Job panel: GSD 4.1 cm/px" /
+        "area 4.2 ha" — previously computed nowhere, so the panel never
+        showed them).
+
+        The GeoTIFF is in EPSG:4326 (degrees), so pixel size and extent are
+        converted to metres the same way as the browser's flight-path map:
+        111,320 m/degree at the equator, with a cos(latitude) correction on
+        the east-west axis. Area is the raster's bounding-box footprint
+        (width × height in metres), not an exact flight-polygon area — a
+        reasonable approximation given auto-boundary already crops the
+        output to the flight area, and the area is small enough that the
+        equirectangular approximation holds (same assumption the roadmap
+        makes for the photo map).
+
+        Returns (gsd_cm_per_px, area_m2), or (None, None) if gdalinfo fails
+        or the output can't be parsed — never raises, this is a nice-to-have
+        display value, not something that should fail the job.
+        """
+        try:
+            import json as _stats_json
+            result = subprocess.run(
+                ['gdalinfo', '-json', geotiff_path],
+                check=True, capture_output=True, text=True,
+            )
+            info = _stats_json.loads(result.stdout)
+            size = info.get('size') or [0, 0]
+            width_px, height_px = size[0], size[1]
+            if not width_px or not height_px:
+                return None, None
+
+            corners = info.get('cornerCoordinates') or {}
+            ul = corners.get('upperLeft')
+            lr = corners.get('lowerRight')
+            if not ul or not lr:
+                return None, None
+
+            lon_span_deg = abs(lr[0] - ul[0])
+            lat_span_deg = abs(ul[1] - lr[1])
+            centre_lat = (ul[1] + lr[1]) / 2
+            cos_lat = math.cos(math.radians(centre_lat)) or 1
+
+            width_m  = lon_span_deg * 111320 * cos_lat
+            height_m = lat_span_deg * 111320
+
+            area_m2 = width_m * height_m
+            gsd_x_cm = (width_m  / width_px)  * 100
+            gsd_y_cm = (height_m / height_px) * 100
+            gsd_cm_per_px = (gsd_x_cm + gsd_y_cm) / 2
+
+            return round(gsd_cm_per_px, 2), round(area_m2, 1)
+        except Exception as exc:
+            logger.warning(f"[TAK] {job_id}: Could not compute GeoTIFF stats — {exc}")
+            return None, None
 
     def _delete_webodm_project(project):
         """
@@ -729,8 +794,22 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         # layer. The file is odm_report/shots.geojson in the task assets.
         # Match by file name and write a `used` flag for each point into
         # the sidecar file.
+        #
+        # Two uploaded photos can share an original file name — merged SD
+        # cards routinely do this, and it's exactly what api.upload_view's
+        # "NNNN_" upload-order prefix exists to make safe on disk (see
+        # api.py). shots.geojson reports the *prefixed* name (that's what
+        # was actually staged into the task root for ODM). Matching on the
+        # raw prefixed name keeps duplicate-named photos distinguishable;
+        # api.upload_view tags each sidecar point with that exact name as
+        # `saved_name` at upload time. Older points that predate that
+        # tagging (or a request where the photo_points/images counts didn't
+        # line up, so api.py declined to tag) fall back to the previous
+        # prefix-stripped match, which can't tell duplicates apart but is
+        # still better than no match at all.
         # ------------------------------------------------------------------
-        used_photo_names = set()
+        used_photo_names_raw = set()      # exact "NNNN_<original>" names
+        used_photo_names_stripped = set() # prefix stripped — legacy fallback
         try:
             import json as _json
             shots_path = os.path.join(
@@ -742,36 +821,63 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
             if os.path.exists(shots_path):
                 with open(shots_path, 'r') as f:
                     shots_data = _json.load(f)
-                # shots.geojson is a GeoJSON FeatureCollection
-                # Each feature has properties.name = photo file name
+                # shots.geojson is a GeoJSON FeatureCollection. The roadmap
+                # flagged the exact properties field holding the photo file
+                # name as unconfirmed against real ODM output ("name" vs
+                # "filename" vs "image" across OpenDroneMap versions) — try
+                # the plausible candidates in order rather than betting on
+                # one, and log which key (if any) actually matched so a
+                # future run can confirm/narrow this from the logs.
+                NAME_FIELD_CANDIDATES = ('filename', 'name', 'image', 'file')
+                matched_field = None
                 for feature in shots_data.get('features', []):
                     props = feature.get('properties', {})
-                    name = props.get('name', '')
+                    name = ''
+                    for field in NAME_FIELD_CANDIDATES:
+                        if props.get(field):
+                            name = props[field]
+                            if matched_field is None:
+                                matched_field = field
+                            break
                     if name:
-                        used_photo_names.add(name)
-                logger.info(
-                    f"[TAK] {job_id}: Found {len(used_photo_names)} used photos in shots.geojson"
-                )
+                        used_photo_names_raw.add(name)
+                        used_photo_names_stripped.add(re.sub(r'^\d{4}_', '', name))
+                if matched_field:
+                    logger.info(
+                        f"[TAK] {job_id}: Found {len(used_photo_names_raw)} used photos "
+                        f"in shots.geojson (matched on properties.{matched_field})"
+                    )
+                else:
+                    logger.warning(
+                        f"[TAK] {job_id}: shots.geojson has "
+                        f"{len(shots_data.get('features', []))} features but none had "
+                        f"a usable name field ({', '.join(NAME_FIELD_CANDIDATES)}) — "
+                        f"used/unused photo data will be empty for this job. "
+                        f"Check a feature's properties keys to confirm the real field name."
+                    )
             else:
                 logger.info(f"[TAK] {job_id}: No shots.geojson found — skipping used-photo analysis")
         except Exception as exc:
             logger.warning(f"[TAK] {job_id}: Could not read shots.geojson — {exc}")
 
-        # Update the sidecar file with used flags
-        if used_photo_names:
+        # Update the sidecar file with used flags. Goes through
+        # archive.update_photos_sidecar() — a single exclusive-locked
+        # read-modify-write, like every other shared JSON file this plugin
+        # writes (index.json, settings.json) — instead of an unguarded
+        # open/read then open/write, which could race a concurrent
+        # status_view poll reading the file mid-write.
+        if used_photo_names_raw:
             try:
-                sidecar_path = archive.get_photos_sidecar_path(job_id)
-                if os.path.exists(sidecar_path):
-                    with open(sidecar_path, 'r') as f:
-                        points = _json.load(f)
+                def _mark_used(points):
                     for point in points:
-                        # Match by file name (without the numeric prefix)
-                        point_name = point.get('name', '')
-                        # The sidecar stores original names; the working dir
-                        # has prefixed names. Match by the original name.
-                        point['used'] = point_name in used_photo_names
-                    with open(sidecar_path, 'w') as f:
-                        _json.dump(points, f, indent=2)
+                        saved_name = point.get('saved_name')
+                        if saved_name:
+                            point['used'] = saved_name in used_photo_names_raw
+                        else:
+                            point['used'] = point.get('name', '') in used_photo_names_stripped
+
+                points = archive.update_photos_sidecar(job_id, _mark_used)
+                if points is not None:
                     used_count = sum(1 for p in points if p.get('used'))
                     total_count = len(points)
                     logger.info(
@@ -808,9 +914,12 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
             )
 
         geotiff_mb = os.path.getsize(geotiff_path) / 1024 / 1024
-        archive.mark_completed(job_id, geotiff_path)
+        gsd_cm_per_px, area_m2 = _compute_geotiff_stats(geotiff_path)
+        archive.mark_completed(job_id, geotiff_path,
+                               gsd_cm_per_px=gsd_cm_per_px, area_m2=area_m2)
         logger.info(
             f"[TAK] {job_id}: Pipeline complete — GeoTIFF {geotiff_mb:.1f} MB"
+            f"{f', GSD {gsd_cm_per_px:.1f} cm/px, area {area_m2:.0f} m²' if gsd_cm_per_px else ''}"
         )
 
     except subprocess.CalledProcessError as exc:

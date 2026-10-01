@@ -35,6 +35,10 @@ JPEG_MAGIC = b'\xff\xd8\xff'
 # EXIF GPS IFD tag
 EXIF_GPS_IFD = 34853
 
+# EXIF Make/Model tags (standard TIFF/EXIF IFD0 tags)
+EXIF_MAKE  = 271
+EXIF_MODEL = 272
+
 # WebODM task status codes (app/models/task.py)
 STATUS_QUEUED    = 10
 STATUS_RUNNING   = 20
@@ -90,16 +94,20 @@ def _validate_image_bytes(name, data):
     """
     Validate JPEG bytes already read into memory.
 
-    Returns (ok: bool, error_message: str | None).
+    Returns (ok: bool, error_message: str | None, group_key: str | None).
+    group_key is "<width>x<height>|<make> <model>" — used by upload_view to
+    re-check for mixed camera sets server-side (v0.8.3 Workstream B), mirroring
+    the browser's own size+model grouping. None when the image couldn't be
+    read far enough to determine it.
     """
     if len(data) == 0:
-        return False, f'"{name}" is empty.'
+        return False, f'"{name}" is empty.', None
 
     # JPEG magic bytes
     if not data.startswith(JPEG_MAGIC):
-        return False, f'"{name}" does not appear to be a valid JPEG file.'
+        return False, f'"{name}" does not appear to be a valid JPEG file.', None
 
-    # GPS EXIF check
+    # GPS EXIF check + size/camera grouping key
     try:
         with PilImage.open(io.BytesIO(data)) as pil_img:
             exif = pil_img.getexif()
@@ -107,11 +115,16 @@ def _validate_image_bytes(name, data):
                 return False, (
                     f'"{name}" is missing GPS data. '
                     f'Drone photos must have GPS for georeferencing.'
-                )
+                ), None
+            w, h = pil_img.size
+            make  = (exif.get(EXIF_MAKE)  or '').strip()
+            model = (exif.get(EXIF_MODEL) or '').strip()
+            camera = f'{make} {model}'.strip()
+            group_key = f'{w}x{h}|{camera}'
     except Exception:
-        return False, f'"{name}" could not be read as an image.'
+        return False, f'"{name}" could not be read as an image.', None
 
-    return True, None
+    return True, None, group_key
 
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
@@ -237,18 +250,11 @@ def upload_view(request):
         log.exception('TAK Overlay: failed to create job record: %s', e)
         return _err('Failed to create job record. Please try again.')
 
-    # ── Save photo points sidecar (v0.8.3) ─────────────────────
-    if photo_points:
-        try:
-            archive.save_photos_sidecar(job_id, photo_points)
-        except Exception as e:
-            log.warning('TAK Overlay: could not save photo points: %s', e)
-
     # ── Determine resize target (v0.8.2) ──────────────────────
     # The browser sends client_resized=true when it has already resized
     # photos to the target. The server verifies dimensions and falls back
     # to server-side resize if any photo exceeds the target.
-    resize_target = 4000 if quality_mode else 2048
+    resize_target = archive.RESIZE_TARGET_HIGH_RES if quality_mode else archive.RESIZE_TARGET_STANDARD
 
     # ── Validate + save in one pass ────────────────────────────
     # Read each file once via _read_upload_bytes (which uses
@@ -258,6 +264,11 @@ def upload_view(request):
     # return the operator-facing error.
     saved_paths = []
     all_within_target = True
+    group_counts = {}   # v0.8.3: size+camera group_key -> photo count, for the
+                         # mixed-camera re-check below (roadmap Workstream B:
+                         # "The server repeats the check and rejects mixed
+                         # sets" — the browser's own prompt/filter is not
+                         # trusted as the only gate).
     try:
         for idx, img in enumerate(images, start=1):
             try:
@@ -273,10 +284,12 @@ def upload_view(request):
                     f'Please try the upload again.'
                 )
 
-            ok, err_msg = _validate_image_bytes(img.name, data)
+            ok, err_msg, group_key = _validate_image_bytes(img.name, data)
             if not ok:
                 archive.delete_job(job_id)
                 return _err(err_msg)
+            if group_key:
+                group_counts[group_key] = group_counts.get(group_key, 0) + 1
 
             # v0.8.2: Check if photo is within the target size.
             # If client_resized=true but a photo exceeds the target,
@@ -300,10 +313,32 @@ def upload_view(request):
             # and os.path.join with the raw name silently overwrites — the job
             # then processes fewer images than the operator selected, with no
             # error. ODM doesn't care about filenames; GPS EXIF is what matters.
-            dest = os.path.join(images_dir, '{:04d}_{}'.format(idx, img.name))
+            saved_name = '{:04d}_{}'.format(idx, img.name)
+            dest = os.path.join(images_dir, saved_name)
             with open(dest, 'wb') as f:
                 f.write(data)
             saved_paths.append(dest)
+
+            # v0.8.4: tag the matching photo_points entry (if any) with the
+            # exact prefixed name this file was just saved under — this is
+            # also the exact name ODM will see (images are staged into the
+            # WebODM task root under this same name; see pipeline.py). Two
+            # uploaded photos can share an original file name (e.g. merged
+            # SD cards, or a dual-camera drone whose visual and thermal
+            # streams both restart their own sequential numbering) — the
+            # prefix is what keeps them distinguishable through to the
+            # used/unused match in pipeline.py. images[] and photo_points
+            # are built from the same (already filtered/ordered) selection
+            # in the browser in one request, so position idx-1 in
+            # photo_points corresponds to this image — but only trust that
+            # when the counts actually line up; a mismatch means something
+            # about the request was unexpected, and it's safer to leave
+            # saved_name unset (pipeline.py falls back to the older,
+            # less-precise name-only match) than to tag the wrong point.
+            if len(photo_points) == len(images) and idx - 1 < len(photo_points):
+                point = photo_points[idx - 1]
+                if isinstance(point, dict):
+                    point['saved_name'] = saved_name
 
         log.info('TAK Overlay: saved %d images for job %s', len(saved_paths), job_id)
     except Exception as e:
@@ -313,6 +348,37 @@ def upload_view(request):
         archive.mark_failed(job_id, f'Failed to save uploaded images: {e}')
         archive.cleanup_working_dir(job_id)
         return _err('Upload failed while saving files. Please try again.')
+
+    # ── Mixed-camera re-check (v0.8.3) ──────────────────────────
+    # The browser groups photos by size+camera model and prompts the
+    # operator to drop everything but the largest group. Don't trust that
+    # as the only gate — re-derive the groups from what was actually
+    # uploaded and reject outright if more than one survived.
+    if len(group_counts) > 1:
+        archive.delete_job(job_id)
+        ranked = sorted(group_counts.items(), key=lambda kv: kv[1], reverse=True)
+        parts = []
+        for key, count in ranked:
+            dims, _, camera = key.partition('|')
+            label = camera if camera else dims
+            parts.append(f'{count} photos at {dims} ({label})' if camera else f'{count} photos at {dims}')
+        return _err(
+            'This selection has photos from more than one camera: '
+            + '; '.join(parts) + '. '
+            'Upload photos from a single camera only — remove the smaller '
+            'group(s) and try again.'
+        )
+
+    # ── Save photo points sidecar (v0.8.3) ──────────────────────
+    # Saved here (after every photo is validated, saved, and tagged with
+    # its saved_name above) rather than before the save loop, so a job that
+    # fails validation partway through never leaves a sidecar file behind
+    # for archive.delete_job() to have to clean up.
+    if photo_points:
+        try:
+            archive.save_photos_sidecar(job_id, photo_points)
+        except Exception as e:
+            log.warning('TAK Overlay: could not save photo points: %s', e)
 
     # ── Kick off async pipeline ────────────────────────────────
     # v0.8.2: If the browser resized photos and all are within the target,
@@ -337,6 +403,40 @@ def upload_view(request):
     return _ok(job_id=job_id)
 
 
+# ── Photo/quality enrichment (v0.8.4) ────────────────────────────────────────
+
+def _photo_quality_fields(job_id, job_status=None):
+    """
+    Read the photo sidecar for job_id and derive the used/total counts and
+    quality warning. Shared by status_view (single job, polled while running)
+    and jobs_view (archive list, so the sidebar job-details panel — which
+    reads from the jobs_view cache, not status_view — can show the same
+    warning and photo map once a job is completed).
+
+    used_count/quality_warning are only computed once job_status ==
+    'completed'. pipeline.py only sets each point's `used` flag in its
+    Finalizing phase, right before the GDAL export — while a job is still
+    'running' no point has `used` set yet, so every point would read as
+    unused and the warning would fire as a false positive on every running
+    job. photo_points (e.g. for a live flight-path preview) are still
+    returned regardless of status.
+
+    Returns (photo_points, used_count, total_count, quality_warning).
+    """
+    photo_points = archive.read_photos_sidecar(job_id)
+    used_count = None
+    total_count = None
+    quality_warning = None
+    if photo_points and job_status == 'completed':
+        total_count = len(photo_points)
+        used_count = sum(1 for p in photo_points if p.get('used'))
+        if total_count > 0:
+            unused_ratio = (total_count - used_count) / total_count
+            if unused_ratio > 0.3:
+                quality_warning = f"⚠ {used_count} / {total_count} photos used — possible low overlap."
+    return photo_points, used_count, total_count, quality_warning
+
+
 # ── Job list ───────────────────────────────────────────────────────────────────
 
 @login_required
@@ -346,6 +446,11 @@ def jobs_view(request):
 
     Returns all jobs (newest first) for the archive section.
     Also triggers 72-hour auto-purge on each call.
+
+    Completed jobs are enriched with photo_points/used_count/total_count/
+    quality_warning from their sidecar file (v0.8.4), so the sidebar job
+    details panel can show the quality warning and used/unused photo map
+    without a separate status_view poll.
 
     Returns JSON:
         {"ok": true, "jobs": [ <job record>, ... ]}
@@ -357,6 +462,15 @@ def jobs_view(request):
         log.warning('TAK Overlay: purge_expired_jobs failed: %s', e)
 
     jobs = archive.get_all_jobs()
+    for job in jobs:
+        if job.get('status') == 'completed':
+            photo_points, used_count, total_count, quality_warning = \
+                _photo_quality_fields(job['job_id'], job['status'])
+            job['photo_points']    = photo_points
+            job['used_count']      = used_count
+            job['total_count']     = total_count
+            job['quality_warning'] = quality_warning
+
     return _ok(jobs=jobs)
 
 
@@ -402,20 +516,8 @@ def status_view(request, job_id):
         except Exception as e:
             log.debug('TAK Overlay: status_view could not read task progress: %s', e)
 
-    # v0.8.3: Include photo points from sidecar file
-    photo_points = archive.read_photos_sidecar(job_id)
-
-    # v0.8.4: Calculate used photo count and quality warning
-    used_count = None
-    total_count = None
-    quality_warning = None
-    if photo_points:
-        total_count = len(photo_points)
-        used_count = sum(1 for p in photo_points if p.get('used'))
-        if total_count > 0 and used_count is not None:
-            unused_ratio = (total_count - used_count) / total_count
-            if unused_ratio > 0.3:
-                quality_warning = f"⚠ {used_count} / {total_count} photos used — possible low overlap."
+    # v0.8.3/v0.8.4: Photo points, used count and quality warning from sidecar
+    photo_points, used_count, total_count, quality_warning = _photo_quality_fields(job_id, job['status'])
 
     return _ok(
         job_id=          job['job_id'],
@@ -579,10 +681,15 @@ def settings_view(request):
         username = request.user.username
         user_settings = archive.get_user_settings(username)
         global_settings = archive.get_settings().get('global', {})
+        # v0.8.4: disk use beside the retention setting (roadmap §9.2) — only
+        # worth the directory walk for staff, who are the only ones who can
+        # act on it (change retention).
+        disk_usage = archive.get_disk_usage() if request.user.is_staff else None
         return _ok(
             **{'global': global_settings},
             user=user_settings,
             is_staff=request.user.is_staff,
+            disk_usage=disk_usage,
         )
 
     if request.method == 'POST':
@@ -669,10 +776,20 @@ def node_status_view(request):
     Hostname and port are read dynamically from the first ProcessingNode
     record in the database — no hardcoded values.
 
+    v0.8.4: Also surfaces the header metrics from the same /info payload —
+    taskQueueCount, cpuCores, and memory use (1 - availableMemory/totalMemory).
+    /info has no CPU-usage field, so there is no cpu_percent here; the header
+    deliberately shows no CPU % (roadmap §4.3). All three are null when the
+    node is offline or the fields are missing (older NodeODM versions may
+    omit them).
+
     Returns JSON:
-        {"ok": true, "online": true,  "name": "node-odx-1"}
-        {"ok": true, "online": false, "name": "node-odx-1"}
-        {"ok": true, "online": false, "name": "No node configured"}
+        {"ok": true, "online": true,  "name": "node-odx-1",
+         "queue_count": 0, "cpu_threads": 8, "mem_percent": 42.0}
+        {"ok": true, "online": false, "name": "node-odx-1",
+         "queue_count": null, "cpu_threads": null, "mem_percent": null}
+        {"ok": true, "online": false, "name": "No node configured",
+         "queue_count": null, "cpu_threads": null, "mem_percent": null}
     """
     try:
         import requests as _requests
@@ -680,21 +797,39 @@ def node_status_view(request):
 
         node = ProcessingNode.objects.order_by('id').first()
         if node is None:
-            return _ok(online=False, name='No node configured')
+            return _ok(online=False, name='No node configured',
+                       queue_count=None, cpu_threads=None, mem_percent=None)
 
         url = 'http://{}:{}/info'.format(node.hostname, node.port)
+        queue_count = None
+        cpu_threads = None
+        mem_percent = None
         try:
             resp = _requests.get(url, timeout=2)
             online = resp.status_code == 200
+            if online:
+                try:
+                    info = resp.json()
+                    queue_count = info.get('taskQueueCount')
+                    cpu_threads = info.get('cpuCores')
+                    total_mem = info.get('totalMemory')
+                    avail_mem = info.get('availableMemory')
+                    if total_mem and avail_mem is not None:
+                        mem_percent = round((1 - avail_mem / total_mem) * 100, 1)
+                except Exception as e:
+                    log.debug('TAK Overlay: could not parse /info metrics: %s', e)
         except Exception:
             online = False
 
         log.debug('TAK Overlay: node probe %s -> online=%s', url, online)
-        return _ok(online=online, name=node.hostname)
+        return _ok(online=online, name=node.hostname,
+                   queue_count=queue_count, cpu_threads=cpu_threads,
+                   mem_percent=mem_percent)
 
     except Exception as e:
         log.warning('TAK Overlay: node_status_view error: %s', e)
-        return _ok(online=False, name='Unknown')
+        return _ok(online=False, name='Unknown',
+                   queue_count=None, cpu_threads=None, mem_percent=None)
 
 
 # ── Delete ─────────────────────────────────────────────────────────────────────
