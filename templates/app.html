@@ -37,6 +37,19 @@
         button { font-family: inherit; cursor: pointer; }
         a { text-decoration: none; }
 
+        /* ── Popup-mode FOUC guard ───────────────────────────────────
+           #main-view has no display:none of its own — it's the default
+           view. #guide-view/#settings-view start display:none and are
+           only shown by JS once DOMContentLoaded runs, by which point the
+           browser has typically already parsed (and often painted)
+           #main-view, producing a visible flash of the main app shell in
+           a ?guide=1/?settings=1 popup before it flips to the right view.
+           The tiny synchronous script right after this tag sets one of
+           these classes on <html> before the body is parsed, so this
+           rule applies before #main-view ever paints. */
+        html.popup-guide #main-view,
+        html.popup-settings #main-view { display: none; }
+
         /* ── App shell ───────────────────────────────────────────── */
         .app-shell {
             display: flex; flex-direction: column;
@@ -646,6 +659,23 @@
             .sidebar-details { max-height: none; }
         }
     </style>
+    <script>
+        // Runs synchronously while the <head> is still parsing, before any
+        // part of <body> (including #main-view) exists — so the
+        // html.popup-guide/popup-settings CSS rule above is already active
+        // by the time #main-view would otherwise be created and painted.
+        // Keep this in sync with the ?guide=1/?settings=1 checks in the
+        // main DOMContentLoaded handler further down, which still does the
+        // actual view-switching logic (this only prevents the flash).
+        (function() {
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('guide') === '1') {
+                document.documentElement.classList.add('popup-guide');
+            } else if (params.get('settings') === '1') {
+                document.documentElement.classList.add('popup-settings');
+            }
+        })();
+    </script>
 </head>
 <body>
 
