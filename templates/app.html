@@ -191,13 +191,13 @@
         }
         input[type="text"].input {
             display: block; width: 100%; padding: 8px 10px;
-            background: var(--bg); border: 1px solid var(--border);
+            background: var(--bg3); border: 1px solid var(--border-hi);
             border-radius: 3px; color: var(--text);
             font-family: var(--sans); font-size: 13px; outline: none;
-            transition: border-color 0.15s;
+            transition: border-color 0.15s, box-shadow 0.15s;
         }
-        input[type="text"].input:hover { border-color: var(--border-hi); }
-        input[type="text"].input:focus { border-color: var(--accent-dim); }
+        input[type="text"].input:hover { border-color: var(--accent-dim); }
+        input[type="text"].input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
         input[type="text"].input::placeholder { color: var(--text-dim); }
         input[type="text"].input:disabled { opacity: 0.5; cursor: not-allowed; }
 
