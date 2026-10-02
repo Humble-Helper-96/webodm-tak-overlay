@@ -2728,7 +2728,7 @@ function guideSectionCapture() {
     html += '<p>Fly 75% front overlap and 65% side overlap. Most mission-planning apps calculate this.</p>';
     html += '<p>Fly an S-pattern grid over the target at consistent altitude. Parallel passes across the area, reversing direction at each end.</p>';
     html += '<p>Get GPS lock before takeoff. Take a single photo on the ground to establish a baseline.</p>';
-    html += '<p>Use visual JPEG photos only. Remove thermal photos before upload.</p>';
+    html += '<p>Upload visual and thermal photos together if needed. The plugin detects each camera and lets you choose which to process.</p>';
     html += '<p>Limit: 150 photos per job. 300 with high-capacity mode.</p>';
     html += '<div class="guide-note">Regulatory note: Always comply with applicable FAA altitude regulations. In uncontrolled airspace the standard sUAS ceiling is <span data-len="alt-ceiling"></span> AGL.</div>';
     fillUnitPlaceholders(html);
@@ -2847,7 +2847,7 @@ function renderQuickRef(elementId) {
     html += '<div class="quick-ref__row"><span class="quick-ref__label">ALTITUDE</span><span class="quick-ref__value">Fly <span data-len="alt-band"></span> above the target.</span></div>';
     html += '<div class="quick-ref__row"><span class="quick-ref__label">BASE</span><span class="quick-ref__value">Set altitude from the highest point of the target, not the takeoff point.</span></div>';
     html += '<div class="quick-ref__row"><span class="quick-ref__label">OVERLAP</span><span class="quick-ref__value">75% front. 65% side.</span></div>';
-    html += '<div class="quick-ref__row"><span class="quick-ref__label">PHOTOS</span><span class="quick-ref__value">Visual JPEG only. Remove thermal photos.</span></div>';
+    html += '<div class="quick-ref__row"><span class="quick-ref__label">PHOTOS</span><span class="quick-ref__value">JPEG only. Multiple cameras OK — choose which to process.</span></div>';
     html += '<div class="quick-ref__row"><span class="quick-ref__label">GPS</span><span class="quick-ref__value">Get GPS lock before takeoff.</span></div>';
     html += '<div class="quick-ref__row"><span class="quick-ref__label">LIMIT</span><span class="quick-ref__value">150 photos. 300 with high-capacity.</span></div>';
     html += '<div class="quick-ref__row"><span class="quick-ref__label">RUNTIME</span><span class="quick-ref__value">About 3 min for 65 photos in standard mode.</span></div>';
