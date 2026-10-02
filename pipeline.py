@@ -1,5 +1,5 @@
 """
-pipeline.py — TAK Incident Overlay plugin (v0.8.4)
+pipeline.py — TAK Incident Overlay plugin (v0.8.5)
 Async WebODM task creation, polling, and GDAL export pipeline.
 
 Entry point:  start(job_id, saved_paths)
@@ -391,16 +391,80 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     # GDAL commands locked from Spike 2 (Eagle River Road, AK, 2026-04-27)
     # =====================================================================
 
-    def _reproject_to_wgs84(input_tif, output_tif):
+    def _compute_source_gsd(input_tif):
+        """
+        Read the source orthophoto's native ground-sample-distance (metres/px)
+        and centroid latitude via `gdalinfo -json`, so the WGS84 reprojection
+        can target a pixel size that actually matches the source data instead
+        of a fixed constant.
+
+        ODM orthophotos are in a projected (UTM) CRS with no rotation, so
+        `geoTransform`'s pixel-size entries ([1] and [5]) are already in
+        metres — no unit conversion needed. `wgs84Extent` is present on every
+        gdalinfo report regardless of the source CRS, so it's used purely to
+        get a centroid latitude for the metres→degrees conversion the caller
+        needs for `-tr`.
+
+        Fixes a v0.8.4-and-earlier bug where `-tr` was a hardcoded constant
+        (0.000000449°, calibrated for one mid-latitude deployment): every job
+        reprojected to the same output pixel grid regardless of its actual
+        source resolution, so the job panel's reported GSD was effectively
+        constant per deployment latitude and didn't reflect WebODM's own
+        "Average GSD" for that task — most visibly on lower-resolution
+        sensors (e.g. thermal), where the fixed grid silently upsampled the
+        orthophoto and reported a finer GSD than the source data actually had.
+
+        Returns (gsd_m_per_px, centre_lat), or (None, None) if gdalinfo fails
+        or the expected fields are missing — caller falls back to the old
+        fixed pixel size rather than failing the job over this.
+        """
+        try:
+            import json as _gsd_json
+            result = subprocess.run(
+                ['gdalinfo', '-json', input_tif],
+                check=True, capture_output=True, text=True,
+            )
+            info = _gsd_json.loads(result.stdout)
+            gt = info.get('geoTransform')
+            if not gt or len(gt) < 6:
+                return None, None
+            gsd_m = (abs(gt[1]) + abs(gt[5])) / 2
+            if not gsd_m:
+                return None, None
+
+            lats = []
+
+            def _collect_lats(coords):
+                if not coords:
+                    return
+                if len(coords) == 2 and all(isinstance(v, (int, float)) for v in coords):
+                    lats.append(coords[1])
+                else:
+                    for sub in coords:
+                        _collect_lats(sub)
+
+            _collect_lats((info.get('wgs84Extent') or {}).get('coordinates'))
+            if not lats:
+                return None, None
+            centre_lat = sum(lats) / len(lats)
+
+            return gsd_m, centre_lat
+        except Exception as exc:
+            logger.warning(f"[TAK] {job_id}: Could not read source GSD — {exc}")
+            return None, None
+
+    def _reproject_to_wgs84(input_tif, output_tif, lon_step_deg, lat_step_deg):
         """
         Reproject orthophoto from native UTM to EPSG:4326 (required by all TAK clients).
 
         Key flags:
           -t_srs EPSG:4326          All TAK clients expect WGS84
           -dstalpha                 Preserves the alpha mask from the 4-band source
-          -tr 0.000000449           Locks output pixel size in degrees; calibrated for
-                                    mid-latitude deployment (≈ 2.5 cm/px). v2: compute dynamically from source GSD and centroid latitude
-                                    from source GSD and centroid latitude.
+          -tr <lon> <lat>           Output pixel size in degrees, derived per-job from
+                                    the source orthophoto's actual GSD and centroid
+                                    latitude (see _compute_source_gsd) — not a fixed
+                                    constant, so output resolution tracks the real
+                                    source data instead of silently up/downsampling it.
           -co COMPRESS=LZW          Efficient intermediate file
           -co TILED=YES             Required for large rasters
         """
@@ -412,7 +476,7 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
                 '-co',    'COMPRESS=LZW',
                 '-co',    'TILED=YES',
                 '-dstalpha',
-                '-tr',    '0.000000449', '0.000000449',
+                '-tr',    str(lon_step_deg), str(lat_step_deg),
                 input_tif,
                 output_tif,
             ],
@@ -896,9 +960,28 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         wgs84_tif    = os.path.join(working_dir, 'wgs84.tif')
         # geotiff_path was resolved at the top of the pipeline (v0.7.13)
 
+        source_gsd_m, source_centre_lat = _compute_source_gsd(ortho_path)
+        if source_gsd_m and source_centre_lat is not None:
+            cos_lat = math.cos(math.radians(source_centre_lat)) or 1
+            lat_step_deg = source_gsd_m / 111320
+            lon_step_deg = source_gsd_m / (111320 * cos_lat)
+            logger.info(
+                f"[TAK] {job_id}: Source GSD {source_gsd_m * 100:.2f} cm/px at "
+                f"lat {source_centre_lat:.2f} → -tr {lon_step_deg:.9f} {lat_step_deg:.9f}"
+            )
+        else:
+            # Fallback: previous fixed mid-latitude constant, kept only so a
+            # gdalinfo hiccup on the source file degrades to old behavior
+            # rather than failing the job.
+            lon_step_deg = lat_step_deg = 0.000000449
+            logger.warning(
+                f"[TAK] {job_id}: Could not determine source GSD — "
+                "falling back to fixed reprojection pixel size"
+            )
+
         archive.update_job(job_id, phase='Reprojecting')
         logger.info(f"[TAK] {job_id}: Phase → Reprojecting")
-        _reproject_to_wgs84(ortho_path, wgs84_tif)
+        _reproject_to_wgs84(ortho_path, wgs84_tif, lon_step_deg, lat_step_deg)
         logger.info(f"[TAK] {job_id}: Reprojection complete → {wgs84_tif}")
 
         archive.update_job(job_id, phase='Exporting GeoTIFF')

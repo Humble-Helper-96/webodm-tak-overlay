@@ -1,5 +1,5 @@
 # TAK Incident Overlay
-**v0.8.4 | WebODM Coreplugin**
+**v0.8.5 | WebODM Coreplugin**
 
 > ⚠️ **This is a plugin for [WebODM](https://github.com/OpenDroneMap/WebODM),
 > not a standalone application.** WebODM must be installed and running before

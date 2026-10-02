@@ -7,6 +7,26 @@ loose.
 
 ---
 
+## [0.8.5] — 2026-10-01
+
+### Fixed
+- **Critical: plugin failed silently on load.** `plugin.py`'s `index()` view rendered `user_settings` into the page template with `{{ user_settings|safe }}` — `|safe` only stops Django from HTML-escaping the value, it does not serialize it. A raw Python dict falls back to `str(dict)` (single-quoted strings, capitalized `True`/`False`/`None`), which is valid Python but not valid JavaScript. The browser hit a `ReferenceError` on that line, which killed the rest of the inline `<script>` before anything registered — the page loaded but nothing on it worked (no job list, no node status, no settings), with no errors visible server-side. Fixed by serializing with `json.dumps()`. Diagnosed from a HAR capture of a production instance showing zero API calls after page load.
+- **Fixed 23 findings** from a full audit of the v0.8.4 implementation against the v0.8 roadmap and the v0.7.13 baseline, plus 3 additional interaction bugs found during follow-up verification (largest-camera-group selection picking the wrong group, used/unused photo matching breaking on duplicate filenames, GPS data falling out of lockstep with photos across multiple processing jobs).
+- **Reprojection pixel size no longer hardcoded.** `pipeline.py`'s WGS84 reprojection step (`gdalwarp -tr`) used a fixed constant (`0.000000449°`), calibrated for one mid-latitude deployment — every job was resampled onto the same output pixel grid regardless of its actual source resolution. This made the job panel's reported GSD effectively constant per deployment latitude, decoupled from WebODM's own "Average GSD" for that task, and most visibly wrong on lower-resolution sensors (e.g. thermal), where the fixed grid silently upsampled the orthophoto and reported a finer GSD than the source data actually had. The reprojection now reads the source orthophoto's real pixel size and centroid latitude via `gdalinfo` and derives `-tr` per job, so output resolution — and the GSD readout — tracks the actual source data.
+- **Guide/Settings popup windows flashed the main page.** Opening `?guide=1` or `?settings=1` in a new window briefly showed the full main UI before jumping to the targeted section. Fixed with a synchronous `<head>` script that tags `<html>` with a `popup-guide`/`popup-settings` class before the body parses, paired with CSS that hides `#main-view` for that class.
+
+### Changed
+- **Mixed-camera handling redesigned around explicit operator selection**, replacing the automatic "keep largest group" heuristic that could discard the wrong camera's photos (confirmed in the field on an Autel 640T RGB+thermal payload, where the heuristic kept the thermal images and purged the RGB set). Photos are grouped by pixel dimensions + EXIF Make/Model (unchanged primary signal); the operator now sees a checkbox picker and chooses one or more groups to process. Each selected group runs as its own sequential WebODM job — zero backend changes needed, since the existing one-group-per-request upload contract already supported it.
+- **Non-JPEG sidecar files** (e.g. thermal radiometric data, flight logs) are now excluded from a photo selection with a notice, instead of blocking the whole upload.
+- **Job naming** changed from `Incident Name YYYY-MM-DD HHMM` to `IncidentName_Prefix_YYMMDD` — underscore-joined, platform-agnostic filename prefix in place of full camera+dimensions text, date-only (no time-of-day) in `YYMMDD` form. When two camera groups share an identical EXIF camera string (and therefore no distinguishing prefix), the job name falls back to camera+dimensions to avoid a collision.
+- **Photo map moved to a pop-out window**, mirroring the Guide/Settings pop-outs, reclaiming the sidebar space it used to occupy.
+- **UI layout**: processing-option toggles moved above the photo selection field; the flight-path preview map was shrunk, then removed entirely in favor of the pop-out photo map; the selected-job details panel is now pinned to a fixed height instead of pushing the job list around; sidebar widened (360px → 420px) and rebalanced between the scrolling job list and the fixed details panel; Start Process button restyled solid green; photo-selection field contrast improved against the dark background.
+
+### Added
+- **37-assertion regression suite** (`test_camera_grouping.js`) covering the mixed-camera redesign: all required grouping/selection scenarios, the real-world Autel 640T RGB+thermal pattern, and the shared-camera-string naming collision.
+
+---
+
 ## [0.8.4] — 2026-09-30
 
 ### Added

@@ -38,7 +38,7 @@ class Plugin(PluginBase):
             # json.dumps() produces valid JS (lowercase true/false/null).
             user_settings = archive.get_user_settings(request.user.username)
             return render(request, self.template_path("app.html"), {
-                'plugin_version': '0.8.4',
+                'plugin_version': '0.8.5',
                 'user_settings': json.dumps(user_settings),
                 'resize_target_standard': archive.RESIZE_TARGET_STANDARD,
                 'resize_target_high_res': archive.RESIZE_TARGET_HIGH_RES,
@@ -46,7 +46,7 @@ class Plugin(PluginBase):
 
         @login_required
         def ping(request):
-            return JsonResponse({'status': 'ok', 'version': '0.8.4'})
+            return JsonResponse({'status': 'ok', 'version': '0.8.5'})
 
         return [
             # ── UI ──────────────────────────────────────────────────
