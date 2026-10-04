@@ -645,18 +645,22 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         logger.info(f"[TAK] {job_id}: Created WebODM project {project.id} — '{project.name}'")
 
         # ------------------------------------------------------------------
-        # Grant the submitting operator visibility into this project.
+        # Grant the submitting operator full access to this project.
         #
         # The project owner is the first superuser (above), NOT the operator
-        # who submitted the job. Without an explicit object-level grant, the
-        # operator cannot see the project/task in the WebODM dashboard even
-        # with "Save WebODM task" enabled — the ?project_task_open= deep link
-        # silently falls back to the bare dashboard.
+        # who submitted the job — kept that way so the job's WebODM project
+        # survives even if the operator's account is later disabled/removed
+        # (e.g. an Authentik-provisioned account). Without an explicit
+        # object-level grant, the operator can't see the project at all.
         #
-        # WebODM uses django-guardian for object permissions (the same
-        # mechanism behind Administration → Object Permissions). Task
-        # visibility is checked through the parent project's permissions,
-        # so granting view_project is sufficient to see the task too.
+        # v0.8.5 and earlier granted only view_project, which is enough for
+        # the project to appear in the dashboard list but NOT enough to open
+        # it — WebODM's task-list API and map view both failed for a
+        # non-owner with view_project alone (confirmed live: dashboard shows
+        # "Could not load task list: error", and View Map 404s). Granting
+        # the full project permission set (view/change/delete) gives the
+        # operator the same access they'd have if they owned the project
+        # outright, while the superuser stays the actual Django owner.
         #
         # Non-fatal by design: a failed grant must never kill the job.
         # Skip if the submitter IS the superuser owner (already sees it).
@@ -668,10 +672,11 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
                     username=submitting_username
                 ).first()
                 if submitter is not None:
-                    assign_perm('view_project', submitter, project)
+                    for perm in ('view_project', 'change_project', 'delete_project'):
+                        assign_perm(perm, submitter, project)
                     logger.info(
                         f"[TAK] {job_id}: Granted '{submitting_username}' "
-                        f"view_project on project {project.id}"
+                        f"view/change/delete_project on project {project.id}"
                     )
                 else:
                     logger.warning(
