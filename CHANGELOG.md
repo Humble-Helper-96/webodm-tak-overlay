@@ -15,6 +15,9 @@ loose.
 - **Settings UI: Core Count fields restyled to match the app's dark theme.** The exact-core-count and core-count-ceiling number inputs (added in v0.8.6/v0.8.7) rendered with the browser's default white background and native spinner arrows, clashing with the rest of the dark-themed Settings panel. They now use the same `.input` styling as every other text field in the app, and the invalid-state border/error text color now references the app's actual `--red` theme variable instead of a hardcoded fallback that didn't match it.
 - **Removed the "about 35 min" estimate from the Terrain Correction toggle's main-page hint.** That figure only holds for roughly a 65-photo job and reads as a flat promise next to the toggle regardless of how many photos are actually selected. Runtime estimates belong in the Field Guide, where they're already correctly qualified by photo count (one guide passage wasn't — fixed to say "~35 min for a 65-photo job; scales with photo count" instead of a bare "~35 min").
 
+### Fixed
+- **Terrain Correction's (ⓘ) info button opened the wrong guide section.** It pointed at Section 02 "Terrain and Altitude" (flight-planning advice about setting altitude from the target, not the takeoff point) instead of Section 04 "Job Options," which actually documents the toggle. Both the High-Capacity and Save WebODM Task rows already linked to Job Options — Terrain Correction's link was the one outlier, left over from before the toggles were reorganized. Now matches the other two.
+
 ---
 
 ## [0.8.8] — 2026-10-05
