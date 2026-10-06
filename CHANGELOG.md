@@ -7,6 +7,13 @@ loose.
 
 ---
 
+## [0.8.8] — 2026-10-05
+
+### Fixed
+- **Header badge and `ping` endpoint showed "V0.8.5" on v0.8.6 and v0.8.7.** `plugin.py` hardcoded `'plugin_version': '0.8.5'` (rendered by `templates/app.html` as `V{{ plugin_version }}`) and `JsonResponse({'status': 'ok', 'version': '0.8.5'})` as separate string literals that were never bumped alongside `manifest.json`'s version when 0.8.6 and 0.8.7 shipped, so the installed version and the displayed version silently diverged. Fixed by making `manifest.json` the single source of truth: `plugin.py` now reads `version` from its own `manifest.json` once at import time (path resolved relative to `__file__`, not the working directory) into a module constant, `PLUGIN_VERSION`, and both the template context and the `ping` response use it. Falls back to `'unknown'` — never raises — if the manifest can't be read or parsed, so a missing version can't break page load. Bumping `manifest.json` is now the only per-release step needed to keep the displayed version correct.
+
+---
+
 ## [0.8.7] — 2026-10-05
 
 ### Fixed

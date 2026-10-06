@@ -1,10 +1,34 @@
 import json
+import os
 
 from app.plugins import PluginBase, Menu, MountPoint
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
 from django.utils.translation import gettext as _
+
+
+def _read_plugin_version():
+    """
+    Read "version" from this plugin's own manifest.json, so manifest.json
+    is the single source of truth (v0.8.8) instead of a separately-bumped
+    string literal — the header badge and ping endpoint showed "0.8.5" on
+    both v0.8.6 and v0.8.7 because that literal was never updated alongside
+    the manifest.
+
+    Path is resolved relative to this file, not the working directory, so
+    it's correct regardless of where the WebODM process is launched from.
+    Never raises — a missing/unparseable manifest must not break page load.
+    """
+    try:
+        manifest_path = os.path.join(os.path.dirname(__file__), 'manifest.json')
+        with open(manifest_path, 'r') as f:
+            return json.load(f).get('version', 'unknown')
+    except Exception:
+        return 'unknown'
+
+
+PLUGIN_VERSION = _read_plugin_version()
 
 
 class Plugin(PluginBase):
@@ -38,7 +62,7 @@ class Plugin(PluginBase):
             # json.dumps() produces valid JS (lowercase true/false/null).
             user_settings = archive.get_user_settings(request.user.username)
             return render(request, self.template_path("app.html"), {
-                'plugin_version': '0.8.5',
+                'plugin_version': PLUGIN_VERSION,
                 'user_settings': json.dumps(user_settings),
                 'resize_target_standard': archive.RESIZE_TARGET_STANDARD,
                 'resize_target_high_res': archive.RESIZE_TARGET_HIGH_RES,
@@ -46,7 +70,7 @@ class Plugin(PluginBase):
 
         @login_required
         def ping(request):
-            return JsonResponse({'status': 'ok', 'version': '0.8.5'})
+            return JsonResponse({'status': 'ok', 'version': PLUGIN_VERSION})
 
         return [
             # ── UI ──────────────────────────────────────────────────
