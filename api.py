@@ -654,6 +654,32 @@ def download_geotiff_view(request, job_id):
     return response
 
 
+def _probe_node_cpu_cores():
+    """
+    Direct HTTP probe of the primary ProcessingNode's /info endpoint for
+    cpuCores, used to validate an admin-submitted thread_count server-side
+    (v0.8.6) rather than trusting a client-supplied ceiling. Mirrors the
+    same node-lookup pattern as node_status_view. Returns int or None if
+    no node is configured, the probe fails, or the field is missing.
+    """
+    try:
+        import requests as _requests
+        from nodeodm.models import ProcessingNode
+
+        node = ProcessingNode.objects.order_by('id').first()
+        if node is None:
+            return None
+        url = 'http://{}:{}/info'.format(node.hostname, node.port)
+        resp = _requests.get(url, timeout=5)
+        if resp.status_code != 200:
+            return None
+        cores = resp.json().get('cpuCores')
+        return int(cores) if cores else None
+    except Exception as e:
+        log.warning('TAK Overlay: could not probe node cpuCores for validation: %s', e)
+        return None
+
+
 # ── Settings (v0.8.1) ─────────────────────────────────────────────────────────
 
 @login_required
@@ -665,7 +691,7 @@ def settings_view(request):
     GET returns:
         {
           "ok": true,
-          "global": { "retention_hours": 72, "thread_percent": 50 },
+          "global": { "retention_hours": 72, "thread_percent": 50, "thread_count": null },
           "user":   { "units": "metric", "time_format": "24h", ... },
           "is_staff": false
         }
@@ -673,9 +699,14 @@ def settings_view(request):
     POST accepts:
         { "units": "metric", "time_format": "24h", "highres_default": false,
           "save_task_default": false,
-          "global": { "retention_hours": 72, "thread_percent": 50 } }
+          "global": { "retention_hours": 72, "thread_percent": 50, "thread_count": null } }
 
     The "global" block is only applied if the user is staff.
+
+    "thread_count" (v0.8.6) is an optional exact-core-count override for ODM
+    max-concurrency. When set (a positive integer, clamped to the node's
+    reported cpuCores), it wins outright over thread_percent in pipeline.py's
+    calculation. Pass null to clear it and revert to percent-based behavior.
     """
     if request.method == 'GET':
         username = request.user.username
@@ -742,6 +773,24 @@ def settings_view(request):
                     global_updates['thread_percent'] = tp
                 except (ValueError, TypeError):
                     return _err('Invalid thread_percent value.')
+            if 'thread_count' in body['global']:
+                raw_tc = body['global']['thread_count']
+                if raw_tc is None:
+                    # Explicit unset — revert to percent-based calculation.
+                    global_updates['thread_count'] = None
+                else:
+                    try:
+                        if isinstance(raw_tc, bool) or int(raw_tc) != raw_tc:
+                            raise ValueError
+                        tc = int(raw_tc)
+                    except (ValueError, TypeError):
+                        return _err('Thread count must be a whole number.')
+                    max_cores = _probe_node_cpu_cores()
+                    if tc < 1:
+                        return _err('Thread count must be at least 1.')
+                    if max_cores and tc > max_cores:
+                        return _err(f'Thread count cannot exceed the node\'s reported {max_cores} CPU cores.')
+                    global_updates['thread_count'] = tc
             if global_updates:
                 archive.save_global_settings(global_updates)
 

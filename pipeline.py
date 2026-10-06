@@ -326,9 +326,21 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
             logger.warning(f"[TAK] {job_id}: Could not read node cpuCores — {exc}")
             return None
 
+    _thread_count = archive.get_thread_count()
     _thread_percent = archive.get_thread_percent()
     _node_threads = _get_node_cpu_threads()
-    if _node_threads:
+    if _thread_count:
+        # v0.8.6: explicit core-count override wins outright over
+        # thread_percent. Clamp against the node's reported cpuCores when
+        # known, so a stale override (set before a node swap) can't exceed
+        # the node's real capacity; if the node is unreachable, trust the
+        # admin-set value as-is (floor of 1).
+        MAX_CONCURRENCY = max(1, min(_thread_count, _node_threads)) if _node_threads else max(1, _thread_count)
+        logger.info(
+            f"[TAK] {job_id}: using explicit thread_count={_thread_count} "
+            f"-> max-concurrency={MAX_CONCURRENCY}"
+        )
+    elif _node_threads:
         # Round-half-up, not Python's round() (round-half-to-even / banker's
         # rounding). Decided here per roadmap §9.2: an admin picking 50% on
         # a 5-thread node expects 3 threads, not round()'s 2 — half-to-even
@@ -336,8 +348,8 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
         # single human-facing percentage setting like this one.
         MAX_CONCURRENCY = max(1, math.floor(_node_threads * _thread_percent / 100 + 0.5))
         logger.info(
-            f"[TAK] {job_id}: Node reports {_node_threads} CPU threads — "
-            f"using {_thread_percent}% = {MAX_CONCURRENCY} threads"
+            f"[TAK] {job_id}: using thread_percent={_thread_percent}% of reported "
+            f"{_node_threads} cores = {MAX_CONCURRENCY} threads"
         )
     else:
         # Fallback if the node is unreachable or doesn't report cpuCores

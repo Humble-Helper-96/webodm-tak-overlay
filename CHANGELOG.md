@@ -7,6 +7,18 @@ loose.
 
 ---
 
+## [0.8.6] — 2026-10-05
+
+### Added
+- **Exact core-count override for ODM processing concurrency.** Settings → System now has a second, independent control alongside the existing 25/50/75% buttons: a numeric "exact core count" field that, when set, wins outright over the percentage setting for `max-concurrency`. Motivation: percent-based concurrency is computed against the processing node's reported `cpuCores` (NodeODM's `/info` endpoint), but on a node running in a Docker container with a `cpuset` restriction (e.g. `cpuset: "2,3,4,5"`, 4 cores), `/info` reports the *physical host's* core count, not the cpuset-limited count the container can actually use — confirmed on a reference box where `nproc` inside the container returns 4 but `/info` reports 6. A percent setting can therefore compute a thread count that exceeds the container's real CPU limit and risks ODM queue stalls; the previous 50% default happened to be safe on that specific host only by coincidence of the two core counts involved, not by design. Operators who know their node's real usable core count can now just say "use exactly N" instead. Selecting one control visibly deselects the other; a "use percentage instead" action clears the override and reverts to percent-based behavior. `pipeline.py` logs which mode produced the running job's `max-concurrency`.
+- `archive.py`: new `thread_count` global setting (int or null) and `get_thread_count()`, additive alongside the existing `thread_percent`/`get_thread_percent()`. A settings.json with no `thread_count` key behaves exactly as v0.8.5 (defaults to percent-based, `thread_percent` default unchanged at 50).
+- `api.py`: `settings_view` POST accepts an optional `thread_count` in the same `global` body as `retention_hours`/`thread_percent`. Validated as a positive integer, clamped against the processing node's actual reported `cpuCores` (probed server-side, not trusted from the client) — rejects 0, negative, non-integer, or out-of-range values with a clear error.
+
+### Changed
+- `pipeline.py`'s `max-concurrency` calculation now checks `thread_count` first; if set, it's used directly (clamped to the node's reported cores when known) and `thread_percent` is ignored. Falls back to the existing percent-of-reported-cpuCores math when `thread_count` is unset, and to the long-standing fixed value of 3 when neither is available — unchanged from v0.8.5.
+
+---
+
 ## [0.8.5] — 2026-10-01
 
 ### Fixed

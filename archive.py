@@ -82,6 +82,7 @@ DEFAULT_SETTINGS = {
     'global': {
         'retention_hours': 72,    # auto-purge after N hours (24/48/72/168/720)
         'thread_percent': 50,     # percentage of node CPU threads for ODM
+        'thread_count': None,     # exact core-count override (v0.8.6); None = use thread_percent
     },
     'users': {}  # keyed by username: {units, time_format, highres_default, save_task_default}
 }
@@ -309,6 +310,19 @@ def get_thread_percent():
         return s.get('global', {}).get('thread_percent', 50)
     except Exception:
         return 50
+
+
+def get_thread_count():
+    """
+    Return the configured exact-core-count override from settings, or None
+    if unset (meaning: use thread_percent instead). Falls back to None if
+    settings can't be read.
+    """
+    try:
+        s = get_settings()
+        return s.get('global', {}).get('thread_count')
+    except Exception:
+        return None
 
 
 def _dir_size_bytes(path):

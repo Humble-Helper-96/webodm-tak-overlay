@@ -1065,6 +1065,20 @@
                     </div>
                 </div>
                 <div class="details-row">
+                    <span class="details-label">EXACT CORE COUNT</span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <input type="number" id="thread-count-input" min="1" step="1"
+                               style="width:64px;" placeholder="—"
+                               oninput="onThreadCountInput()">
+                        <button class="btn btn-neutral btn--sm" id="thread-count-clear"
+                                onclick="clearThreadCount()" style="display:none;">USE PERCENTAGE INSTEAD</button>
+                    </div>
+                </div>
+                <div class="details-row" id="thread-count-error-row" style="display:none;">
+                    <span class="details-label"></span>
+                    <span class="details-value" id="thread-count-error" style="color:var(--danger,#c33);"></span>
+                </div>
+                <div class="details-row">
                     <span class="details-label">THREAD CALC</span>
                     <span class="details-value" id="thread-calc">—</span>
                 </div>
@@ -1072,7 +1086,7 @@
 
             <!-- Save / Cancel -->
             <div style="display:flex;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-                <button class="btn btn-primary" onclick="saveSettings()">SAVE</button>
+                <button class="btn btn-primary" id="settings-save-btn" onclick="saveSettings()">SAVE</button>
                 <button class="btn btn-neutral" onclick="closeSettings()">CANCEL</button>
             </div>
         </div>
@@ -1159,7 +1173,8 @@ var settings = {
     // Global (admin) settings — defaults here match archive.DEFAULT_SETTINGS
     // until the real values arrive from GET settings/ (see loadGlobalSettings).
     retentionHours: 72,
-    threadPercent: 50
+    threadPercent: 50,
+    threadCount: null  // v0.8.6: exact-core-count override; null = use threadPercent
 };
 
 // Override with server-provided user settings (passed from plugin.py template)
@@ -2178,7 +2193,9 @@ var Units = {
             'error-typical': settings.units === 'imperial' ? '±5 ft' : '±1.5 m',
             'error-extreme': settings.units === 'imperial' ? '±25 ft' : '±7.5 m',
             'purge-time':    formatRetentionLabel(settings.retentionHours),
-            'thread-percent': (settings.threadPercent || 50) + '%'
+            'thread-percent': settings.threadCount != null
+                ? (settings.threadCount + ' exact core' + (settings.threadCount === 1 ? '' : 's'))
+                : ((settings.threadPercent || 50) + '%')
         };
         return ex[key] || '';
     }
@@ -2272,6 +2289,10 @@ document.addEventListener('DOMContentLoaded', function() {
 function showSettingsWindow() {
     document.getElementById('main-view').style.display = 'none';
     document.getElementById('settings-view').style.display = 'flex';
+    // v0.8.6: populate nodeInfo.cpuCores in this window too, so the exact
+    // core-count field's client-side max validation reflects the real node
+    // (this window doesn't share the opener's checkNodeStatus() polling).
+    checkNodeStatus();
     loadSettingsUI();
 }
 
@@ -2424,13 +2445,87 @@ function loadSettingsUI() {
                 btn.style.opacity = isStaff ? '' : '0.4';
             });
 
-            // Thread calculation display
-            var cpuThreads = nodeInfo.cpuCores || 8;
-            var calcThreads = Math.max(1, Math.round(cpuThreads * threadPct / 100));
-            document.getElementById('thread-calc').textContent =
-                'Node reports ' + cpuThreads + ' CPU threads · jobs use ' + calcThreads;
+            // Exact core-count override (v0.8.6)
+            var threadCountInput = document.getElementById('thread-count-input');
+            threadCountInput.value = (global.thread_count != null) ? global.thread_count : '';
+            threadCountInput.disabled = !isStaff;
+            document.getElementById('thread-count-clear').style.display =
+                (global.thread_count != null) ? '' : 'none';
+
+            updateThreadModeUI();
         })
         .catch(function() {});
+}
+
+// Reflects which concurrency mode (percent vs. exact count) is currently
+// active in the Settings panel: dims the inactive control's buttons/input,
+// recomputes THREAD CALC for whichever mode wins, and toggles the save
+// button's disabled state on invalid exact-count input (v0.8.6).
+function updateThreadModeUI() {
+    var input = document.getElementById('thread-count-input');
+    var raw = input.value.trim();
+    var cpuThreads = nodeInfo.cpuCores || null;
+    var errorRow = document.getElementById('thread-count-error-row');
+    var errorEl = document.getElementById('thread-count-error');
+    var saveBtn = document.getElementById('settings-save-btn');
+    var isStaff = document.getElementById('admin-badge').style.display !== 'none';
+
+    var exactActive = raw !== '';
+    var invalid = false;
+    var errorMsg = '';
+
+    if (exactActive) {
+        var n = Number(raw);
+        if (!Number.isInteger(n) || n < 1) {
+            invalid = true;
+            errorMsg = 'Must be a whole number of 1 or more.';
+        } else if (cpuThreads && n > cpuThreads) {
+            invalid = true;
+            errorMsg = 'Cannot exceed the node\'s reported ' + cpuThreads + ' CPU cores.';
+        }
+    }
+
+    errorRow.style.display = invalid ? '' : 'none';
+    errorEl.textContent = errorMsg;
+    input.style.borderColor = invalid ? 'var(--danger, #c33)' : '';
+    input.style.opacity = (!isStaff) ? '0.4' : '';
+
+    // Dim the percent buttons when exact-count mode is active (and valid);
+    // dim the exact-count controls when percent mode is in charge.
+    document.querySelectorAll('#thread-buttons .btn').forEach(function(btn) {
+        btn.style.opacity = (!isStaff || (exactActive && !invalid)) ? '0.4' : '';
+    });
+    document.getElementById('thread-count-clear').style.display = exactActive ? '' : 'none';
+
+    var calcEl = document.getElementById('thread-calc');
+    if (exactActive && !invalid) {
+        var n2 = Number(raw);
+        calcEl.textContent = 'Exact override: jobs use ' + n2 + ' threads' +
+            (cpuThreads ? ' (node reports ' + cpuThreads + ')' : '') + ' — overrides percentage';
+    } else if (exactActive && invalid) {
+        calcEl.textContent = '—';
+    } else {
+        var threadPct = 50;
+        document.querySelectorAll('#thread-buttons .btn').forEach(function(btn) {
+            if (btn.className.indexOf('btn-primary') !== -1) {
+                threadPct = parseInt(btn.getAttribute('data-threads'));
+            }
+        });
+        var cores = cpuThreads || 8;
+        var calcThreads = Math.max(1, Math.round(cores * threadPct / 100));
+        calcEl.textContent = 'Node reports ' + cores + ' CPU threads · jobs use ' + calcThreads;
+    }
+
+    if (saveBtn) saveBtn.disabled = invalid;
+}
+
+function onThreadCountInput() {
+    updateThreadModeUI();
+}
+
+function clearThreadCount() {
+    document.getElementById('thread-count-input').value = '';
+    updateThreadModeUI();
 }
 
 function setUnits(units) {
@@ -2463,10 +2558,9 @@ function setThreadPercent(pct) {
         var val = parseInt(btn.getAttribute('data-threads'));
         btn.className = 'btn btn--sm ' + (val === pct ? 'btn-primary' : 'btn-neutral');
     });
-    var cpuThreads = nodeInfo.cpuCores || 8;
-    var calcThreads = Math.max(1, Math.round(cpuThreads * pct / 100));
-    document.getElementById('thread-calc').textContent =
-        'Node reports ' + cpuThreads + ' CPU threads · jobs use ' + calcThreads;
+    // Picking a percentage explicitly reverts to percent-based mode.
+    document.getElementById('thread-count-input').value = '';
+    updateThreadModeUI();
 }
 
 function saveSettings() {
@@ -2485,6 +2579,14 @@ function saveSettings() {
         }
     });
 
+    // Exact core-count override (v0.8.6) — empty field means "unset, use percentage".
+    var threadCountRaw = document.getElementById('thread-count-input').value.trim();
+    var threadCount = threadCountRaw === '' ? null : parseInt(threadCountRaw, 10);
+    if (threadCount !== null && (!Number.isInteger(threadCount) || threadCount < 1)) {
+        alert('Exact core count must be a whole number of 1 or more.');
+        return;
+    }
+
     var payload = {
         units: settings.units,
         time_format: settings.timeFormat,
@@ -2498,6 +2600,7 @@ function saveSettings() {
         payload.global = {
             retention_hours: retention,
             thread_percent: threadPct,
+            thread_count: threadCount,
         };
     }
 
@@ -2538,6 +2641,7 @@ function applySettings(userSettings, globalSettings) {
     if (globalSettings) {
         if (globalSettings.retention_hours) settings.retentionHours = globalSettings.retention_hours;
         if (globalSettings.thread_percent) settings.threadPercent = globalSettings.thread_percent;
+        settings.threadCount = (globalSettings.thread_count != null) ? globalSettings.thread_count : null;
     }
     refreshUnitPlaceholders();
     refreshSidebarPurgeNote();
@@ -2798,7 +2902,7 @@ function guideSectionOptions() {
     html += '<p><strong>High-Resolution mode</strong> — pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Visibly finer ground detail at about 2× runtime.</p>';
     html += '<p><strong>Terrain correction</strong> — disables fast-orthophoto. ODM runs the full SfM pipeline (dense MVS + textured mesh + orthorectification). Corrects geometric error from terrain variation and tall vertical features. About 35 min for 65 photos.</p>';
     html += '<p><strong>Save WebODM task</strong> — retains the WebODM project after the pipeline completes. A direct link appears in the job row. Purged with the job record <span data-len="purge-time">72 hours</span> after the job completes.</p>';
-    html += '<p><strong>Processing threads</strong> — automatic. The plugin reads the processing node CPU threads and uses <span data-len="thread-percent">50%</span>. Changed only by an admin in Settings.</p>';
+    html += '<p><strong>Processing threads</strong> — automatic. The plugin reads the processing node CPU threads and uses <span data-len="thread-percent">50%</span> of them, unless an admin has set an exact core-count override in Settings (useful when the node runs in a container with a restricted CPU set, where the reported thread count may not match what\'s actually available). Changed only by an admin in Settings.</p>';
     fillUnitPlaceholders(html);
     return html;
 }
@@ -3356,6 +3460,11 @@ function checkNodeStatus() {
             setHeaderMetric('hdr-mem',
                 data.mem_percent != null ? Math.round(data.mem_percent) + '%' : '—',
                 metricColor('mem', data.mem_percent));
+
+            // Re-run the Settings thread-mode readout now that the real
+            // cpuCores value has arrived (it may have resolved after
+            // loadSettingsUI's own fetch — this just re-syncs it).
+            updateThreadModeUI();
         })
         .catch(function() {});
 }
@@ -3755,7 +3864,10 @@ function showProcessPhase(opts) {
     if (document.getElementById('quality-mode-toggle').checked) modes.push('HIGH-RESOLUTION');
     if (document.getElementById('terrain-correction-toggle').checked) modes.push('TERRAIN CORRECTION');
     var modeStr = modes.length ? modes.join(' + ') : 'STANDARD';
-    var subLine = n + ' PHOTOS · ' + modeStr + ' · ' + (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * settings.threadPercent / 100)) : '—') + ' THREADS';
+    var effectiveThreads = settings.threadCount != null
+        ? settings.threadCount
+        : (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * settings.threadPercent / 100)) : null);
+    var subLine = n + ' PHOTOS · ' + modeStr + ' · ' + (effectiveThreads != null ? effectiveThreads : '—') + ' THREADS';
     if (opts.groupLabel) subLine = opts.groupLabel + ' · ' + subLine;
     document.getElementById('running-job-sub').textContent = subLine;
 

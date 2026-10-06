@@ -18,11 +18,16 @@ Expected output:
     [PASS] purge_expired_jobs removes old jobs
     [PASS] get_settings returns default retention_hours
     [PASS] get_settings returns default thread_percent
+    [PASS] get_settings returns default thread_count of None (v0.8.6)
+    [PASS] get_thread_count returns None by default (v0.8.6)
     [PASS] get_user_settings returns defaults for an unknown user
     [PASS] save_user_settings persists per-user values
     [PASS] get_retention_hours reflects saved global setting
     [PASS] get_thread_percent reflects saved global setting
     [PASS] save_global_settings does not disturb per-user settings
+    [PASS] get_thread_count reflects saved exact-core override
+    [PASS] thread_percent is untouched by setting thread_count
+    [PASS] get_thread_count returns None after clearing the override
     [PASS] read_photos_sidecar returns None before any sidecar is saved
     [PASS] read_photos_sidecar returns what save_photos_sidecar wrote
     [PASS] update_photos_sidecar mutates and persists the sidecar
@@ -147,6 +152,10 @@ check('get_settings returns default retention_hours',
       default_global.get('retention_hours') == 72, default_global)
 check('get_settings returns default thread_percent',
       default_global.get('thread_percent') == 50, default_global)
+check('get_settings returns default thread_count of None (v0.8.6)',
+      default_global.get('thread_count') is None, default_global)
+check('get_thread_count returns None by default (v0.8.6)',
+      archive.get_thread_count() is None, archive.get_thread_count())
 
 # ── Test 12: per-user settings (v0.8.1) ────────────────────────────────────────
 test_user = 'test_archive_user'
@@ -176,6 +185,18 @@ check('save_global_settings does not disturb per-user settings',
 
 # Restore defaults so this test file doesn't leave the node mid-job-run on 25%
 archive.save_global_settings({'retention_hours': 72, 'thread_percent': 50})
+
+# ── Test 13b: global settings — exact thread_count override (v0.8.6) ──────────
+archive.save_global_settings({'thread_count': 4})
+check('get_thread_count reflects saved exact-core override',
+      archive.get_thread_count() == 4, archive.get_thread_count())
+check('thread_percent is untouched by setting thread_count',
+      archive.get_thread_percent() == 50, archive.get_thread_percent())
+
+# Clearing it (set back to None) must revert to percent-based behavior.
+archive.save_global_settings({'thread_count': None})
+check('get_thread_count returns None after clearing the override',
+      archive.get_thread_count() is None, archive.get_thread_count())
 
 # ── Test 14: photo sidecar CRUD (v0.8.3/v0.8.4) ────────────────────────────────
 sidecar_job_id = archive.create_job('Sidecar Test Job')
