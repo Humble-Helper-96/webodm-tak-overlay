@@ -189,17 +189,30 @@
             font-family: var(--sans); font-size: 11px;
             color: var(--text-dim); margin-top: 5px; line-height: 1.45;
         }
-        input[type="text"].input {
+        input[type="text"].input,
+        input[type="number"].input {
             display: block; width: 100%; padding: 8px 10px;
             background: var(--bg3); border: 1px solid var(--border-hi);
             border-radius: 3px; color: var(--text);
             font-family: var(--sans); font-size: 13px; outline: none;
             transition: border-color 0.15s, box-shadow 0.15s;
         }
-        input[type="text"].input:hover { border-color: var(--accent-dim); }
-        input[type="text"].input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
-        input[type="text"].input::placeholder { color: var(--text-dim); }
-        input[type="text"].input:disabled { opacity: 0.5; cursor: not-allowed; }
+        input[type="text"].input:hover,
+        input[type="number"].input:hover { border-color: var(--accent-dim); }
+        input[type="text"].input:focus,
+        input[type="number"].input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
+        input[type="text"].input::placeholder,
+        input[type="number"].input::placeholder { color: var(--text-dim); }
+        input[type="text"].input:disabled,
+        input[type="number"].input:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* Number spinner arrows read as a foreign browser-chrome element
+           against the app's flat dark theme — drop them, min/step already
+           constrain input and the Settings JS validates on every keystroke. */
+        input[type="number"].input::-webkit-outer-spin-button,
+        input[type="number"].input::-webkit-inner-spin-button {
+            -webkit-appearance: none; margin: 0;
+        }
+        input[type="number"].input { -moz-appearance: textfield; }
 
         /* ── Photo picker ───────────────────────────────────────── */
         .photo-picker {
@@ -771,20 +784,11 @@
                         </div>
                         <div class="option-row">
                             <label class="switch">
-                                <input type="checkbox" id="quality-mode-toggle">
-                                <span class="switch__track"></span>
-                            </label>
-                            <span class="option-row__name">HIGH-RESOLUTION</span>
-                            <span class="option-row__hint" id="hint-highres">2.5 cm/px · about 2× runtime</span>
-                            <button class="option-row__info" onclick="openGuideSection('options')" title="More info">ⓘ</button>
-                        </div>
-                        <div class="option-row">
-                            <label class="switch">
                                 <input type="checkbox" id="terrain-correction-toggle">
                                 <span class="switch__track"></span>
                             </label>
                             <span class="option-row__name">TERRAIN CORRECTION</span>
-                            <span class="option-row__hint">full SfM · about 35 min</span>
+                            <span class="option-row__hint">full SfM + high-res output · about 35 min</span>
                             <button class="option-row__info" onclick="openGuideSection('terrain')" title="More info">ⓘ</button>
                         </div>
                         <div class="option-row">
@@ -1020,13 +1024,6 @@
             <!-- Job defaults group -->
             <div style="margin-bottom:20px;">
                 <div class="section-label">JOB DEFAULTS</div>
-                <div class="option-row" style="border:1px solid var(--border);border-radius:3px;margin-bottom:6px;">
-                    <label class="switch">
-                        <input type="checkbox" id="default-highres" onchange="setDefault('highres_default', this.checked)">
-                        <span class="switch__track"></span>
-                    </label>
-                    <span class="option-row__name">HIGH-RESOLUTION ON BY DEFAULT</span>
-                </div>
                 <div class="option-row" style="border:1px solid var(--border);border-radius:3px;">
                     <label class="switch">
                         <input type="checkbox" id="default-save-task" onchange="setDefault('save_task_default', this.checked)">
@@ -1067,7 +1064,7 @@
                 <div class="details-row">
                     <span class="details-label">EXACT CORE COUNT</span>
                     <div style="display:flex;gap:6px;align-items:center;">
-                        <input type="number" id="thread-count-input" min="1" step="1"
+                        <input type="number" class="input" id="thread-count-input" min="1" step="1"
                                style="width:64px;" placeholder="—"
                                oninput="onThreadCountInput()">
                         <button class="btn btn-neutral btn--sm" id="thread-count-clear"
@@ -1076,12 +1073,12 @@
                 </div>
                 <div class="details-row" id="thread-count-error-row" style="display:none;">
                     <span class="details-label"></span>
-                    <span class="details-value" id="thread-count-error" style="color:var(--danger,#c33);"></span>
+                    <span class="details-value" id="thread-count-error" style="color:var(--red);"></span>
                 </div>
                 <div class="details-row">
                     <span class="details-label">CORE COUNT CEILING</span>
                     <div style="display:flex;gap:6px;align-items:center;">
-                        <input type="number" id="thread-ceiling-input" min="1" step="1"
+                        <input type="number" class="input" id="thread-ceiling-input" min="1" step="1"
                                style="width:64px;" placeholder="auto"
                                oninput="onThreadCeilingInput()">
                         <button class="btn btn-neutral btn--sm" id="thread-ceiling-clear"
@@ -1097,7 +1094,7 @@
                 </div>
                 <div class="details-row" id="thread-ceiling-error-row" style="display:none;">
                     <span class="details-label"></span>
-                    <span class="details-value" id="thread-ceiling-error" style="color:var(--danger,#c33);"></span>
+                    <span class="details-value" id="thread-ceiling-error" style="color:var(--red);"></span>
                 </div>
                 <div class="details-row">
                     <span class="details-label">THREAD CALC</span>
@@ -1189,7 +1186,6 @@ var elapsedTimer  = null;
 var settings = {
     units: 'metric',
     timeFormat: '24h',
-    highResDefault: false,
     saveTaskDefault: false,
     // Global (admin) settings — defaults here match archive.DEFAULT_SETTINGS
     // until the real values arrive from GET settings/ (see loadGlobalSettings).
@@ -1203,7 +1199,6 @@ var serverUserSettings = {{ user_settings|safe }};
 if (serverUserSettings) {
     if (serverUserSettings.units) settings.units = serverUserSettings.units;
     if (serverUserSettings.time_format) settings.timeFormat = serverUserSettings.time_format;
-    if (serverUserSettings.highres_default !== undefined) settings.highResDefault = serverUserSettings.highres_default;
     if (serverUserSettings.save_task_default !== undefined) settings.saveTaskDefault = serverUserSettings.save_task_default;
 }
 
@@ -2288,7 +2283,6 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('incident-name').addEventListener('input', updateProcessButton);
 
     // Apply default toggles from settings
-    if (settings.highResDefault) document.getElementById('quality-mode-toggle').checked = true;
     if (settings.saveTaskDefault) document.getElementById('retain-task-toggle').checked = true;
 
     loadArchive();
@@ -2427,7 +2421,6 @@ function loadSettingsUI() {
             document.getElementById('time-12h').className = 'btn btn--sm ' + (user.time_format === '12h' ? 'btn-primary' : 'btn-neutral');
 
             // Default toggles
-            document.getElementById('default-highres').checked = !!user.highres_default;
             document.getElementById('default-save-task').checked = !!user.save_task_default;
 
             // Admin-only elements
@@ -2531,7 +2524,7 @@ function updateThreadModeUI() {
     }
     ceilingErrorRow.style.display = ceilingInvalid ? '' : 'none';
     ceilingErrorEl.textContent = ceilingInvalid ? 'Must be a whole number of 1 or more.' : '';
-    ceilingInput.style.borderColor = ceilingInvalid ? 'var(--danger, #c33)' : '';
+    ceilingInput.style.borderColor = ceilingInvalid ? 'var(--red)' : '';
     ceilingInput.style.opacity = (!isStaff) ? '0.4' : '';
     document.getElementById('thread-ceiling-clear').style.display = ceilingSet ? '' : 'none';
 
@@ -2554,7 +2547,7 @@ function updateThreadModeUI() {
 
     errorRow.style.display = invalid ? '' : 'none';
     errorEl.textContent = errorMsg;
-    input.style.borderColor = invalid ? 'var(--danger, #c33)' : '';
+    input.style.borderColor = invalid ? 'var(--red)' : '';
     input.style.opacity = (!isStaff) ? '0.4' : '';
 
     // Dim the percent buttons when exact-count mode is active (and valid);
@@ -2622,7 +2615,6 @@ function setTimeFormat(fmt) {
 }
 
 function setDefault(key, value) {
-    if (key === 'highres_default') settings.highResDefault = value;
     if (key === 'save_task_default') settings.saveTaskDefault = value;
 }
 
@@ -2683,7 +2675,6 @@ function saveSettings() {
     var payload = {
         units: settings.units,
         time_format: settings.timeFormat,
-        highres_default: settings.highResDefault,
         save_task_default: settings.saveTaskDefault,
     };
 
@@ -2729,7 +2720,6 @@ function applySettings(userSettings, globalSettings) {
     if (userSettings) {
         if (userSettings.units) settings.units = userSettings.units;
         if (userSettings.time_format) settings.timeFormat = userSettings.time_format;
-        if (userSettings.highres_default !== undefined) settings.highResDefault = userSettings.highres_default;
         if (userSettings.save_task_default !== undefined) settings.saveTaskDefault = userSettings.save_task_default;
     }
     if (globalSettings) {
@@ -2980,8 +2970,7 @@ function guideSectionUpload() {
     html += '<p>The page can be left open or closed. Status updates on its own.</p>';
     html += '<p><strong>Optional toggles:</strong></p>';
     html += '<div class="guide-fix-row">';
-    html += '<strong>High-Resolution mode</strong> — pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Visibly finer detail. Runtime ~10 min for a 65-photo job.<br><br>';
-    html += '<strong>Terrain correction</strong> — runs full 3D reconstruction. Corrects geometric error from elevation change and tall vertical features. Runtime ~35 min.<br><br>';
+    html += '<strong>Terrain correction</strong> — runs full 3D reconstruction and pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Corrects geometric error from elevation change and tall vertical features. Runtime ~35 min.<br><br>';
     html += '<strong>Save WebODM task</strong> — retains the source WebODM project for inspection. Cleared with the job record <span data-len="purge-time">72 hours</span> after the job completes.';
     html += '</div>';
     fillUnitPlaceholders(html);
@@ -2993,8 +2982,7 @@ function guideSectionUpload() {
 function guideSectionOptions() {
     var html = '';
     html += '<p><strong>High-capacity mode</strong> — raises the photo limit from 150 to 300 per job.</p>';
-    html += '<p><strong>High-Resolution mode</strong> — pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Visibly finer ground detail at about 2× runtime.</p>';
-    html += '<p><strong>Terrain correction</strong> — disables fast-orthophoto. ODM runs the full SfM pipeline (dense MVS + textured mesh + orthorectification). Corrects geometric error from terrain variation and tall vertical features. About 35 min for 65 photos.</p>';
+    html += '<p><strong>Terrain correction</strong> — disables fast-orthophoto. ODM runs the full SfM pipeline (dense MVS + textured mesh + orthorectification) and pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Corrects geometric error from terrain variation and tall vertical features. About 35 min for 65 photos.</p>';
     html += '<p><strong>Save WebODM task</strong> — retains the WebODM project after the pipeline completes. A direct link appears in the job row. Purged with the job record <span data-len="purge-time">72 hours</span> after the job completes.</p>';
     html += '<p><strong>Processing threads</strong> — automatic. The plugin reads the processing node CPU threads and uses <span data-len="thread-percent">50%</span> of them, unless an admin has set an exact core-count override in Settings (useful when the node runs in a container with a restricted CPU set, where the reported thread count may not match what\'s actually available). Changed only by an admin in Settings.</p>';
     fillUnitPlaceholders(html);
@@ -3256,7 +3244,11 @@ async function runOneJob(filesForJob, pointsForJob, jobName, groupLabel) {
     if (prepareSeg) prepareSeg.classList.add('active');
 
     // ── Client-side resize (v0.8.2) ──────────────────────────
-    var target = document.getElementById('quality-mode-toggle').checked
+    // v0.8.9: High-Resolution mode folded into Terrain Correction — the
+    // standalone toggle is gone, and terrain correction now always runs
+    // at the high-res target too (negligible quality difference between
+    // the old standard/high-res targets wasn't worth a second toggle).
+    var target = document.getElementById('terrain-correction-toggle').checked
         ? RESIZE_TARGET_HIGH_RES
         : RESIZE_TARGET_STANDARD;
 
@@ -3284,8 +3276,11 @@ async function runOneJob(filesForJob, pointsForJob, jobName, groupLabel) {
     fd.append('tz_offset', new Date().getTimezoneOffset());
     fd.append('high_capacity', isHighCapacityActive() ? 'true' : 'false');
     fd.append('retain_task', document.getElementById('retain-task-toggle').checked ? 'true' : 'false');
-    fd.append('quality_mode', document.getElementById('quality-mode-toggle').checked ? 'true' : 'false');
-    fd.append('terrain_correction', document.getElementById('terrain-correction-toggle').checked ? 'true' : 'false');
+    // quality_mode (high-res output) now rides along with terrain_correction
+    // — there is no longer a separate toggle for it (v0.8.9).
+    var terrainCorrectionOn = document.getElementById('terrain-correction-toggle').checked;
+    fd.append('quality_mode', terrainCorrectionOn ? 'true' : 'false');
+    fd.append('terrain_correction', terrainCorrectionOn ? 'true' : 'false');
     fd.append('client_resized', usedClientResize ? 'true' : 'false');
 
     if (pointsForJob.length > 0) {
@@ -3954,10 +3949,7 @@ function showProcessPhase(opts) {
 
     // Set sub-line
     var n = opts.photoCount != null ? opts.photoCount : (document.getElementById('photo-input').files || []).length;
-    var modes = [];
-    if (document.getElementById('quality-mode-toggle').checked) modes.push('HIGH-RESOLUTION');
-    if (document.getElementById('terrain-correction-toggle').checked) modes.push('TERRAIN CORRECTION');
-    var modeStr = modes.length ? modes.join(' + ') : 'STANDARD';
+    var modeStr = terrainOn ? 'TERRAIN CORRECTION' : 'STANDARD';
     var effectiveThreads = settings.threadCount != null
         ? settings.threadCount
         : (nodeInfo.cpuCores ? Math.max(1, Math.round(nodeInfo.cpuCores * settings.threadPercent / 100)) : null);

@@ -162,12 +162,12 @@ test_user = 'test_archive_user'
 defaults = archive.get_user_settings(test_user)
 check('get_user_settings returns defaults for an unknown user',
       defaults == {'units': 'metric', 'time_format': '24h',
-                   'highres_default': False, 'save_task_default': False},
+                   'save_task_default': False},
       defaults)
 
 archive.save_user_settings(test_user, {
     'units': 'imperial', 'time_format': '12h',
-    'highres_default': True, 'save_task_default': True,
+    'save_task_default': True,
 })
 saved = archive.get_user_settings(test_user)
 check('save_user_settings persists per-user values',

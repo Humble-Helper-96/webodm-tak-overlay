@@ -88,7 +88,7 @@ DEFAULT_SETTINGS = {
                                         # which can overstate real capacity on a cpuset-restricted
                                         # container node. An admin who knows the real limit sets this.
     },
-    'users': {}  # keyed by username: {units, time_format, highres_default, save_task_default}
+    'users': {}  # keyed by username: {units, time_format, save_task_default}
 }
 
 
@@ -249,7 +249,6 @@ def get_user_settings(username):
     user_defaults = {
         'units': 'metric',
         'time_format': '24h',
-        'highres_default': False,
         'save_task_default': False,
     }
     user_data = all_settings.get('users', {}).get(username, {})
@@ -560,8 +559,14 @@ def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
                                    orthophoto-resolution pinned to 2.5 cm/px.
                                    Reference hardware (M920q i5-8500), 65-photo
                                    job at 4 threads: ~10 min vs ~3 min default;
-                                   output 9.0 MB vs 6.1 MB. UI label:
-                                   "High-Resolution mode".
+                                   output 9.0 MB vs 6.1 MB. No longer has its
+                                   own UI toggle as of v0.8.9 — api.py forces
+                                   it on whenever terrain_correction is True
+                                   (the measured quality gain over standard
+                                   resolution wasn't visible enough to justify
+                                   a separate control), so it's kept here as
+                                   an independent parameter purely so job
+                                   records retain an accurate historical flag.
         terrain_correction (bool): If True, fast-orthophoto is disabled and the
                                    full SfM pipeline runs (dense MVS, mesh,
                                    textured orthorectification). Corrects for
@@ -569,7 +574,10 @@ def create_job(incident_name, tz_offset_minutes=0, retain_task=False,
                                    Reference hardware (M920q i5-8500), 65-photo
                                    job at 3 threads: ~35 min vs ~3 min default;
                                    ~42 min combined with quality_mode. UI label:
-                                   "Terrain correction".
+                                   "Terrain correction" (as of v0.8.9 this is
+                                   the only processing-mode toggle the UI
+                                   shows — enabling it also enables
+                                   quality_mode).
     """
     job_id = str(uuid.uuid4())
     utc_now  = datetime.now(timezone.utc)

@@ -174,18 +174,23 @@ def upload_view(request):
     # 72 hours until purge_expired_jobs() cleans it alongside the job.
     retain_task = request.POST.get('retain_task', 'false').lower() == 'true'
 
-    # ── Parse quality_mode flag (v0.7.8 — repurposed) ──────────
-    # UI label is "High-Resolution mode". When enabled, runs the high-res
-    # variant: image resize raised to 4000 px and orthophoto-resolution
-    # pinned to 2.5 cm/px. Runtime ~3× standard on reference hardware.
-    quality_mode = request.POST.get('quality_mode', 'false').lower() == 'true'
-
     # ── Parse terrain_correction flag (v0.7.8) ─────────────────
     # When enabled, fast-orthophoto is omitted and ODM runs the full SfM
     # pipeline (dense MVS, mesh, textured orthorectification). Corrects for
     # varied terrain and tall vertical features at ~12× runtime cost on
     # reference hardware.
     terrain_correction = request.POST.get('terrain_correction', 'false').lower() == 'true'
+
+    # ── Parse quality_mode flag (v0.7.8 — repurposed; v0.8.9 — folded
+    # into terrain_correction) ──────────────────────────────────
+    # When enabled, runs the high-res variant: image resize raised to
+    # 4000 px and orthophoto-resolution pinned to 2.5 cm/px. The UI no
+    # longer exposes this as its own toggle — the measured quality gain
+    # over standard resolution wasn't worth a second control — so it's
+    # forced on whenever terrain_correction is, regardless of what the
+    # client posts (same server-revalidates-the-client pattern used for
+    # high_capacity above).
+    quality_mode = terrain_correction or request.POST.get('quality_mode', 'false').lower() == 'true'
 
     # ── Parse client_resized flag (v0.8.2) ─────────────────────
     # When the browser has already resized photos to the target size,
@@ -721,7 +726,7 @@ def settings_view(request):
         }
 
     POST accepts:
-        { "units": "metric", "time_format": "24h", "highres_default": false,
+        { "units": "metric", "time_format": "24h",
           "save_task_default": false,
           "global": { "retention_hours": 72, "thread_percent": 50,
                       "thread_count": null, "thread_count_ceiling": null } }
@@ -767,7 +772,7 @@ def settings_view(request):
         username = request.user.username
 
         # Per-user settings
-        user_keys = {'units', 'time_format', 'highres_default', 'save_task_default'}
+        user_keys = {'units', 'time_format', 'save_task_default'}
         user_updates = {}
         for key in user_keys:
             if key in body:

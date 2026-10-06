@@ -177,7 +177,12 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
                                     Reference hardware (M920q i5-8500), 65-photo
                                     job at 4 threads: ~10 min vs ~3 min default;
                                     output file 9.0 MB vs 6.1 MB default.
-                                    UI label: "High-Resolution mode".
+                                    No longer has its own UI toggle as of
+                                    v0.8.9 — api.upload_view forces this True
+                                    whenever terrain_correction is True, so in
+                                    practice the two are always equal now;
+                                    kept as a separate parameter so job
+                                    records retain an accurate flag.
         terrain_correction (bool): If True, fast-orthophoto is omitted from
                                     TASK_OPTIONS and ODM runs the full SfM
                                     pipeline (dense MVS, mesh, textured
@@ -186,8 +191,10 @@ def start(job_id, saved_paths, retain_task=False, quality_mode=False,
                                     features. Reference hardware (M920q
                                     i5-8500), 65-photo job at 3 threads:
                                     ~35 min vs ~3 min default; ~42 min when
-                                    combined with quality_mode.
-                                    UI label: "Terrain correction".
+                                    combined with quality_mode (which, as of
+                                    v0.8.9, it always is).
+                                    UI label: "Terrain correction" — the only
+                                    processing-mode toggle the UI shows.
         submitting_username (str|None): WebODM username of the operator who
                                     submitted the job (request.user.username
                                     from api.upload_view). Passed as a plain
