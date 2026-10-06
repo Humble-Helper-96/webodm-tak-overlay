@@ -18,6 +18,10 @@ loose.
 ### Fixed
 - **Terrain Correction's (ⓘ) info button opened the wrong guide section.** It pointed at Section 02 "Terrain and Altitude" (flight-planning advice about setting altitude from the target, not the takeoff point) instead of Section 04 "Job Options," which actually documents the toggle. Both the High-Capacity and Save WebODM Task rows already linked to Job Options — Terrain Correction's link was the one outlier, left over from before the toggles were reorganized. Now matches the other two.
 
+### Changed
+- **Removed GSD and AREA from the selected-job details panel.** Reported GSD remained visibly inaccurate on real jobs despite the v0.7.13 reprojection-pixel-size fix, and area wasn't actionable information in this panel — both just added noise. The underlying `gsd_cm_per_px`/`area_m2` computation and job-record fields (`pipeline.py`/`archive.py`) are untouched and still populated; only the UI display was removed, along with the now-dead `Units.formatGSD`/`formatArea` helpers.
+- **Added a JOB TIME stat** to the same panel for completed jobs: total elapsed time from photo submission (job record creation) through the GeoTIFF being ready for export (job completion), formatted HH:MM:SS to match WebODM's own per-task duration column.
+
 ---
 
 ## [0.8.8] — 2026-10-05

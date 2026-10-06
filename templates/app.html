@@ -149,7 +149,7 @@
             /* Fixed height, pinned at the bottom of the sidebar — a
                flex-grown panel here would change size with however many
                rows the currently-selected job happens to have (a running
-               job shows fewer rows than a completed one with GSD/area/
+               job shows fewer rows than a completed one with JOB TIME/
                quality-warning), making it visibly shift up and down as the
                operator selects different jobs. overflow-y is just a safety
                net for anything that still doesn't fit. */
@@ -2151,25 +2151,6 @@ var Units = {
         }
         return Math.round(m) + ' m';
     },
-    // Area: m² → "4.2 ha" or "10.4 acres"
-    formatArea: function(m2) {
-        if (m2 == null) return '—';
-        if (settings.units === 'imperial') {
-            var acres = m2 * 0.000247105;
-            return acres.toFixed(1) + ' acres';
-        }
-        var ha = m2 / 10000;
-        return ha.toFixed(1) + ' ha';
-    },
-    // GSD: cm/px → "4.1 cm/px" or "1.6 in/px"
-    formatGSD: function(cmPerPx) {
-        if (cmPerPx == null) return '—';
-        if (settings.units === 'imperial') {
-            var inches = cmPerPx / 2.54;
-            return inches.toFixed(1) + ' in/px';
-        }
-        return cmPerPx.toFixed(1) + ' cm/px';
-    },
     // Scale bar: returns round length for given pixel width and m/px
     formatScaleBar: function(widthPx, metresPerPx) {
         if (!widthPx || !metresPerPx) return '—';
@@ -3821,14 +3802,15 @@ function renderJobDetails(jobId) {
     if (job.geotiff_size_bytes) {
         html += '<div class="details-row"><span class="details-label">SIZE</span><span class="details-value">' + formatSize(job.geotiff_size_bytes) + '</span></div>';
     }
-    if (job.gsd_cm_per_px != null) {
-        html += '<div class="details-row"><span class="details-label">GSD</span><span class="details-value">' + Units.formatGSD(job.gsd_cm_per_px) + '</span></div>';
-    }
-    if (job.area_m2 != null) {
-        html += '<div class="details-row"><span class="details-label">AREA</span><span class="details-value">' + Units.formatArea(job.area_m2) + '</span></div>';
-    }
+    // v0.8.9: GSD/AREA removed from this panel — reported GSD was
+    // visibly inaccurate on real jobs and area wasn't actionable here.
+    // The raw gsd_cm_per_px/area_m2 fields are still computed and stored
+    // in the job record (pipeline.py/archive.py); only the display was cut.
     if (job.created_at) {
         html += '<div class="details-row"><span class="details-label">CREATED</span><span class="details-value">' + formatDate(job.created_at) + '</span></div>';
+        if (job.status === 'completed' && job.completed_at) {
+            html += '<div class="details-row"><span class="details-label">JOB TIME</span><span class="details-value">' + formatJobDuration(job.created_at, job.completed_at) + '</span></div>';
+        }
         if (job.status !== 'running') {
             html += '<div class="details-row"><span class="details-label">PURGE IN</span><span class="details-value">' + formatPurgeIn(job.created_at) + '</span></div>';
         }
@@ -4043,6 +4025,22 @@ function formatDate(iso) {
     var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
            ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+// Total elapsed time from photo submission (job record creation, in
+// api.upload_view) through the GeoTIFF being ready for export
+// (archive.mark_completed's timestamp) — the same HH:MM:SS style as
+// WebODM's own per-task duration column (v0.8.9).
+function formatJobDuration(createdIso, completedIso) {
+    var start = new Date(createdIso);
+    var end = new Date(completedIso);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return '—';
+    var elapsed = Math.max(0, Math.floor((end - start) / 1000));
+    var h = Math.floor(elapsed / 3600);
+    var m = Math.floor((elapsed % 3600) / 60);
+    var s = elapsed % 60;
+    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+    return pad(h) + ':' + pad(m) + ':' + pad(s);
 }
 
 function formatTime(iso) {
