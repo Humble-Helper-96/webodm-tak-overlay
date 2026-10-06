@@ -7,6 +7,19 @@ loose.
 
 ---
 
+## [0.8.7] — 2026-10-05
+
+### Fixed
+- **v0.8.6's `thread_count` server-side validation was not actually a safety net on a cpuset-restricted node.** It clamped the admin-submitted exact-core-count override against `_probe_node_cpu_cores()` — a direct re-read of the same `/info` `cpuCores` field whose unreliability on a container node (physical host core count, not the cpuset-limited count) motivated v0.8.6 in the first place. In practice this meant an admin could still enter 5 or 6 on a box whose real limit was 4 and have it pass validation cleanly, right back into the overshoot v0.8.6 was meant to fix. The plugin has no way to read the processing node's actual cgroup/cpuset from inside the `webapp` container, so probing harder isn't an option — `/info` reporting physical cores instead of container-limited cores is a NodeODM-side limitation.
+
+### Added
+- **`thread_count_ceiling` global setting** (int or null) — a staff-settable trusted max for `thread_count` validation, independent of the raw node probe. When unset, validation and runtime clamping fall back to the probe exactly as in v0.8.6 (no regression for admins who haven't hit this edge case); when set, it's used instead, so an admin who knows the real cpuset limit (e.g. 4 on a 6-physical-core host) can make that limit the one actually enforced. Settings UI: a new "CORE COUNT CEILING" field next to the exact-core-count control, with its own validation and a "use auto-detected" clear action; the exact-count field's client-side max now checks this ceiling instead of the raw node probe when one is set.
+- `archive.py`: `get_thread_count_ceiling()`, mirroring the existing `get_thread_count()`/`get_thread_percent()` accessors.
+- `api.py`: `settings_view` POST accepts `thread_count_ceiling` in the same `global` body, validated as a positive integer or null. `thread_count` validation now checks this ceiling (falling back to the raw probe when unset) via a new `_effective_thread_ceiling()` helper, and honors a ceiling change submitted in the *same* request as a `thread_count` change rather than validating against the stale on-disk value.
+- `pipeline.py`'s `max-concurrency` calculation re-clamps `thread_count` against `thread_count_ceiling` (falling back to the raw node probe) at job-run time, independent of whatever was true when `thread_count` was originally saved — so lowering the ceiling later protects jobs immediately, not just newly-saved settings.
+
+---
+
 ## [0.8.6] — 2026-10-05
 
 ### Added

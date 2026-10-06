@@ -331,14 +331,21 @@ def _run_pipeline(job_id, saved_paths, retain_task=False, quality_mode=False,
     _node_threads = _get_node_cpu_threads()
     if _thread_count:
         # v0.8.6: explicit core-count override wins outright over
-        # thread_percent. Clamp against the node's reported cpuCores when
-        # known, so a stale override (set before a node swap) can't exceed
-        # the node's real capacity; if the node is unreachable, trust the
-        # admin-set value as-is (floor of 1).
-        MAX_CONCURRENCY = max(1, min(_thread_count, _node_threads)) if _node_threads else max(1, _thread_count)
+        # thread_percent. v0.8.7: clamp against thread_count_ceiling when
+        # an admin has set one, not the raw node probe — _node_threads
+        # (like the probe api.py validates against) reports the processing
+        # node's *physical host* core count, which overstates real capacity
+        # on a cpuset-restricted container node (confirmed: nproc=4 inside
+        # the container vs. cpuCores=6 from /info on the reference box).
+        # thread_count_ceiling is the admin's trusted real limit; fall back
+        # to the raw probe only when no ceiling has been configured. This
+        # re-clamps at job-run time even if thread_count was saved before
+        # the ceiling existed or was lowered since.
+        _ceiling = archive.get_thread_count_ceiling() or _node_threads
+        MAX_CONCURRENCY = max(1, min(_thread_count, _ceiling)) if _ceiling else max(1, _thread_count)
         logger.info(
             f"[TAK] {job_id}: using explicit thread_count={_thread_count} "
-            f"-> max-concurrency={MAX_CONCURRENCY}"
+            f"(ceiling={_ceiling}) -> max-concurrency={MAX_CONCURRENCY}"
         )
     elif _node_threads:
         # Round-half-up, not Python's round() (round-half-to-even / banker's

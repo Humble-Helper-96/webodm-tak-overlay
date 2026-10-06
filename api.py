@@ -680,6 +680,29 @@ def _probe_node_cpu_cores():
         return None
 
 
+def _effective_thread_ceiling():
+    """
+    The trusted max for thread_count validation (v0.8.7).
+
+    _probe_node_cpu_cores() reads /info's cpuCores, which is the processing
+    node's *physical host* core count — NodeODM has no way to report the
+    cpuset-limited count a containerized node can actually use, so on a
+    node running with e.g. `cpuset: "2,3,4,5"` that probe overstates real
+    capacity (confirmed: nproc=4 inside the container vs. cpuCores=6 from
+    /info). Validating thread_count against the raw probe alone is not a
+    real safety net on such a node.
+
+    An admin who knows the real limit can set thread_count_ceiling to
+    override the probe for validation purposes. When unset, this falls
+    back to the raw probe — no worse than v0.8.6, just no longer the only
+    option.
+    """
+    ceiling = archive.get_thread_count_ceiling()
+    if ceiling:
+        return ceiling
+    return _probe_node_cpu_cores()
+
+
 # ── Settings (v0.8.1) ─────────────────────────────────────────────────────────
 
 @login_required
@@ -691,7 +714,8 @@ def settings_view(request):
     GET returns:
         {
           "ok": true,
-          "global": { "retention_hours": 72, "thread_percent": 50, "thread_count": null },
+          "global": { "retention_hours": 72, "thread_percent": 50,
+                      "thread_count": null, "thread_count_ceiling": null },
           "user":   { "units": "metric", "time_format": "24h", ... },
           "is_staff": false
         }
@@ -699,14 +723,24 @@ def settings_view(request):
     POST accepts:
         { "units": "metric", "time_format": "24h", "highres_default": false,
           "save_task_default": false,
-          "global": { "retention_hours": 72, "thread_percent": 50, "thread_count": null } }
+          "global": { "retention_hours": 72, "thread_percent": 50,
+                      "thread_count": null, "thread_count_ceiling": null } }
 
     The "global" block is only applied if the user is staff.
 
     "thread_count" (v0.8.6) is an optional exact-core-count override for ODM
-    max-concurrency. When set (a positive integer, clamped to the node's
-    reported cpuCores), it wins outright over thread_percent in pipeline.py's
-    calculation. Pass null to clear it and revert to percent-based behavior.
+    max-concurrency. When set, it wins outright over thread_percent in
+    pipeline.py's calculation. Pass null to clear it and revert to
+    percent-based behavior.
+
+    "thread_count_ceiling" (v0.8.7) is the trusted max used to validate
+    thread_count. When unset, validation falls back to the node's raw
+    /info cpuCores probe — which reports the *physical host's* core count
+    and can overstate what a cpuset-restricted container node can actually
+    use. An admin who knows the real limit should set this explicitly;
+    pipeline.py's max-concurrency calculation clamps thread_count against
+    it the same way at job-run time, independent of whatever was true when
+    thread_count was originally saved.
     """
     if request.method == 'GET':
         username = request.user.username
@@ -773,6 +807,26 @@ def settings_view(request):
                     global_updates['thread_percent'] = tp
                 except (ValueError, TypeError):
                     return _err('Invalid thread_percent value.')
+            # thread_count_ceiling is validated before thread_count so a
+            # ceiling change submitted in the same request (e.g. the admin
+            # lowers the ceiling and sets thread_count in one Save) is
+            # honored immediately rather than validating against the
+            # stale on-disk ceiling.
+            if 'thread_count_ceiling' in body['global']:
+                raw_ceil = body['global']['thread_count_ceiling']
+                if raw_ceil is None:
+                    # Explicit unset — revert to the raw node probe for validation.
+                    global_updates['thread_count_ceiling'] = None
+                else:
+                    try:
+                        if isinstance(raw_ceil, bool) or int(raw_ceil) != raw_ceil:
+                            raise ValueError
+                        ceil_val = int(raw_ceil)
+                    except (ValueError, TypeError):
+                        return _err('Thread count ceiling must be a whole number.')
+                    if ceil_val < 1:
+                        return _err('Thread count ceiling must be at least 1.')
+                    global_updates['thread_count_ceiling'] = ceil_val
             if 'thread_count' in body['global']:
                 raw_tc = body['global']['thread_count']
                 if raw_tc is None:
@@ -785,11 +839,14 @@ def settings_view(request):
                         tc = int(raw_tc)
                     except (ValueError, TypeError):
                         return _err('Thread count must be a whole number.')
-                    max_cores = _probe_node_cpu_cores()
+                    if 'thread_count_ceiling' in global_updates:
+                        max_cores = global_updates['thread_count_ceiling'] or _probe_node_cpu_cores()
+                    else:
+                        max_cores = _effective_thread_ceiling()
                     if tc < 1:
                         return _err('Thread count must be at least 1.')
                     if max_cores and tc > max_cores:
-                        return _err(f'Thread count cannot exceed the node\'s reported {max_cores} CPU cores.')
+                        return _err(f'Thread count cannot exceed the configured ceiling of {max_cores} CPU cores.')
                     global_updates['thread_count'] = tc
             if global_updates:
                 archive.save_global_settings(global_updates)

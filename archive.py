@@ -80,9 +80,13 @@ RESIZE_TARGET_HIGH_RES = 4000
 # Default settings
 DEFAULT_SETTINGS = {
     'global': {
-        'retention_hours': 72,    # auto-purge after N hours (24/48/72/168/720)
-        'thread_percent': 50,     # percentage of node CPU threads for ODM
-        'thread_count': None,     # exact core-count override (v0.8.6); None = use thread_percent
+        'retention_hours': 72,         # auto-purge after N hours (24/48/72/168/720)
+        'thread_percent': 50,          # percentage of node CPU threads for ODM
+        'thread_count': None,          # exact core-count override (v0.8.6); None = use thread_percent
+        'thread_count_ceiling': None,  # trusted max for thread_count validation (v0.8.7);
+                                        # None = fall back to the node's raw /info cpuCores probe,
+                                        # which can overstate real capacity on a cpuset-restricted
+                                        # container node. An admin who knows the real limit sets this.
     },
     'users': {}  # keyed by username: {units, time_format, highres_default, save_task_default}
 }
@@ -321,6 +325,22 @@ def get_thread_count():
     try:
         s = get_settings()
         return s.get('global', {}).get('thread_count')
+    except Exception:
+        return None
+
+
+def get_thread_count_ceiling():
+    """
+    Return the admin-configured trusted ceiling for thread_count (v0.8.7),
+    or None if unset. When None, callers should fall back to the node's raw
+    /info cpuCores probe — see api.py's settings_view and pipeline.py's
+    max-concurrency calculation for why that fallback can overstate real
+    capacity on a cpuset-restricted container node. Falls back to None if
+    settings can't be read.
+    """
+    try:
+        s = get_settings()
+        return s.get('global', {}).get('thread_count_ceiling')
     except Exception:
         return None
 

@@ -1079,6 +1079,27 @@
                     <span class="details-value" id="thread-count-error" style="color:var(--danger,#c33);"></span>
                 </div>
                 <div class="details-row">
+                    <span class="details-label">CORE COUNT CEILING</span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <input type="number" id="thread-ceiling-input" min="1" step="1"
+                               style="width:64px;" placeholder="auto"
+                               oninput="onThreadCeilingInput()">
+                        <button class="btn btn-neutral btn--sm" id="thread-ceiling-clear"
+                                onclick="clearThreadCeiling()" style="display:none;">USE AUTO-DETECTED</button>
+                    </div>
+                </div>
+                <div class="details-row">
+                    <span class="details-label" style="font-size:10px;opacity:0.7;">
+                        The node's reported CPU count can be wrong if it runs in a container
+                        with a restricted CPU set. If you know the real limit, set it here —
+                        exact core count above is validated against this instead.
+                    </span>
+                </div>
+                <div class="details-row" id="thread-ceiling-error-row" style="display:none;">
+                    <span class="details-label"></span>
+                    <span class="details-value" id="thread-ceiling-error" style="color:var(--danger,#c33);"></span>
+                </div>
+                <div class="details-row">
                     <span class="details-label">THREAD CALC</span>
                     <span class="details-value" id="thread-calc">—</span>
                 </div>
@@ -2452,23 +2473,69 @@ function loadSettingsUI() {
             document.getElementById('thread-count-clear').style.display =
                 (global.thread_count != null) ? '' : 'none';
 
+            // Trusted ceiling for thread_count validation (v0.8.7) — when
+            // unset, the server falls back to the node's raw /info probe,
+            // which can overstate a cpuset-restricted container's real
+            // capacity, so this is the knob that actually guards against it.
+            var threadCeilingInput = document.getElementById('thread-ceiling-input');
+            threadCeilingInput.value = (global.thread_count_ceiling != null) ? global.thread_count_ceiling : '';
+            threadCeilingInput.disabled = !isStaff;
+            document.getElementById('thread-ceiling-clear').style.display =
+                (global.thread_count_ceiling != null) ? '' : 'none';
+
             updateThreadModeUI();
         })
         .catch(function() {});
 }
 
+// The trusted max for validating the exact-count field (v0.8.7). The raw
+// node probe (nodeInfo.cpuCores) reports the processing node's *physical
+// host* core count, which overstates real capacity on a cpuset-restricted
+// container node — the ceiling field lets an admin who knows the real
+// limit override that probe. Falls back to the probe when the ceiling
+// field is empty, same as the server does when thread_count_ceiling is unset.
+function effectiveThreadCeiling() {
+    var raw = document.getElementById('thread-ceiling-input').value.trim();
+    if (raw !== '') {
+        var n = Number(raw);
+        if (Number.isInteger(n) && n >= 1) return n;
+    }
+    return nodeInfo.cpuCores || null;
+}
+
 // Reflects which concurrency mode (percent vs. exact count) is currently
 // active in the Settings panel: dims the inactive control's buttons/input,
 // recomputes THREAD CALC for whichever mode wins, and toggles the save
-// button's disabled state on invalid exact-count input (v0.8.6).
+// button's disabled state on invalid exact-count or ceiling input (v0.8.6/v0.8.7).
 function updateThreadModeUI() {
     var input = document.getElementById('thread-count-input');
     var raw = input.value.trim();
-    var cpuThreads = nodeInfo.cpuCores || null;
+    var ceilingInput = document.getElementById('thread-ceiling-input');
+    var ceilingRaw = ceilingInput.value.trim();
     var errorRow = document.getElementById('thread-count-error-row');
     var errorEl = document.getElementById('thread-count-error');
+    var ceilingErrorRow = document.getElementById('thread-ceiling-error-row');
+    var ceilingErrorEl = document.getElementById('thread-ceiling-error');
     var saveBtn = document.getElementById('settings-save-btn');
     var isStaff = document.getElementById('admin-badge').style.display !== 'none';
+
+    // Validate the ceiling field itself first — it's what the count field
+    // is checked against.
+    var ceilingSet = ceilingRaw !== '';
+    var ceilingInvalid = false;
+    if (ceilingSet) {
+        var cn = Number(ceilingRaw);
+        if (!Number.isInteger(cn) || cn < 1) {
+            ceilingInvalid = true;
+        }
+    }
+    ceilingErrorRow.style.display = ceilingInvalid ? '' : 'none';
+    ceilingErrorEl.textContent = ceilingInvalid ? 'Must be a whole number of 1 or more.' : '';
+    ceilingInput.style.borderColor = ceilingInvalid ? 'var(--danger, #c33)' : '';
+    ceilingInput.style.opacity = (!isStaff) ? '0.4' : '';
+    document.getElementById('thread-ceiling-clear').style.display = ceilingSet ? '' : 'none';
+
+    var ceiling = ceilingInvalid ? null : effectiveThreadCeiling();
 
     var exactActive = raw !== '';
     var invalid = false;
@@ -2479,9 +2546,9 @@ function updateThreadModeUI() {
         if (!Number.isInteger(n) || n < 1) {
             invalid = true;
             errorMsg = 'Must be a whole number of 1 or more.';
-        } else if (cpuThreads && n > cpuThreads) {
+        } else if (ceiling && n > ceiling) {
             invalid = true;
-            errorMsg = 'Cannot exceed the node\'s reported ' + cpuThreads + ' CPU cores.';
+            errorMsg = 'Cannot exceed the configured ceiling of ' + ceiling + ' CPU cores.';
         }
     }
 
@@ -2501,7 +2568,8 @@ function updateThreadModeUI() {
     if (exactActive && !invalid) {
         var n2 = Number(raw);
         calcEl.textContent = 'Exact override: jobs use ' + n2 + ' threads' +
-            (cpuThreads ? ' (node reports ' + cpuThreads + ')' : '') + ' — overrides percentage';
+            (ceiling ? ' (ceiling ' + ceiling + (ceilingSet ? ', admin-set' : ', node-reported') + ')' : '') +
+            ' — overrides percentage';
     } else if (exactActive && invalid) {
         calcEl.textContent = '—';
     } else {
@@ -2511,15 +2579,27 @@ function updateThreadModeUI() {
                 threadPct = parseInt(btn.getAttribute('data-threads'));
             }
         });
-        var cores = cpuThreads || 8;
+        // Percent-based math (pipeline.py's elif branch) runs against the
+        // node's raw reported cpuCores, not the ceiling — the ceiling only
+        // constrains the exact-count override, so this stays unaffected.
+        var cores = nodeInfo.cpuCores || 8;
         var calcThreads = Math.max(1, Math.round(cores * threadPct / 100));
         calcEl.textContent = 'Node reports ' + cores + ' CPU threads · jobs use ' + calcThreads;
     }
 
-    if (saveBtn) saveBtn.disabled = invalid;
+    if (saveBtn) saveBtn.disabled = invalid || ceilingInvalid;
 }
 
 function onThreadCountInput() {
+    updateThreadModeUI();
+}
+
+function onThreadCeilingInput() {
+    updateThreadModeUI();
+}
+
+function clearThreadCeiling() {
+    document.getElementById('thread-ceiling-input').value = '';
     updateThreadModeUI();
 }
 
@@ -2587,6 +2667,19 @@ function saveSettings() {
         return;
     }
 
+    // Trusted ceiling for thread_count validation (v0.8.7) — empty field
+    // means "unset, fall back to the node's raw /info probe".
+    var threadCeilingRaw = document.getElementById('thread-ceiling-input').value.trim();
+    var threadCeiling = threadCeilingRaw === '' ? null : parseInt(threadCeilingRaw, 10);
+    if (threadCeiling !== null && (!Number.isInteger(threadCeiling) || threadCeiling < 1)) {
+        alert('Core count ceiling must be a whole number of 1 or more.');
+        return;
+    }
+    if (threadCount !== null && threadCeiling !== null && threadCount > threadCeiling) {
+        alert('Exact core count cannot exceed the core count ceiling.');
+        return;
+    }
+
     var payload = {
         units: settings.units,
         time_format: settings.timeFormat,
@@ -2601,6 +2694,7 @@ function saveSettings() {
             retention_hours: retention,
             thread_percent: threadPct,
             thread_count: threadCount,
+            thread_count_ceiling: threadCeiling,
         };
     }
 

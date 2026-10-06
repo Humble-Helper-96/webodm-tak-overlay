@@ -198,6 +198,20 @@ archive.save_global_settings({'thread_count': None})
 check('get_thread_count returns None after clearing the override',
       archive.get_thread_count() is None, archive.get_thread_count())
 
+# ── Test 13c: global settings — thread_count_ceiling (v0.8.7) ─────────────────
+check('get_thread_count_ceiling returns None by default',
+      archive.get_thread_count_ceiling() is None, archive.get_thread_count_ceiling())
+
+archive.save_global_settings({'thread_count_ceiling': 4})
+check('get_thread_count_ceiling reflects saved value',
+      archive.get_thread_count_ceiling() == 4, archive.get_thread_count_ceiling())
+check('thread_count is untouched by setting thread_count_ceiling',
+      archive.get_thread_count() is None, archive.get_thread_count())
+
+archive.save_global_settings({'thread_count_ceiling': None})
+check('get_thread_count_ceiling returns None after clearing it',
+      archive.get_thread_count_ceiling() is None, archive.get_thread_count_ceiling())
+
 # ── Test 14: photo sidecar CRUD (v0.8.3/v0.8.4) ────────────────────────────────
 sidecar_job_id = archive.create_job('Sidecar Test Job')
 check('read_photos_sidecar returns None before any sidecar is saved',
