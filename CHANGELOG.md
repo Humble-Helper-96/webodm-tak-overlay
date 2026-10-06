@@ -7,6 +7,13 @@ loose.
 
 ---
 
+## [0.8.9] — 2026-10-06
+
+### Changed
+- **Softened the Terrain Correction running-state banner** from "Do not start live video streams on this system until this job completes" to "Live video streaming on this system may be impacted until this job completes." Reason: on the reference host, CPU is isolated between the processing node (cpuset 2–5) and MediaMTX (cores 0–1), verified under load — streams are not actually blocked by a terrain correction job. Terrain correction's dense reconstruction does share the GPU with MediaMTX's NVENC transcoding (same card, both use CUDA/NVENC), plus memory and disk I/O, so degradation is possible — but a flat "do not start" was a prohibition the evidence didn't support. The banner now informs rather than prohibits. No other wording elsewhere in the plugin, guide content, or docs told operators not to stream during terrain correction (a prior removal is referenced in the v0.7.13 CHANGELOG entry and a pipeline.py comment, but that text no longer exists in the running UI).
+
+---
+
 ## [0.8.8] — 2026-10-05
 
 ### Fixed
