@@ -788,7 +788,7 @@
                                 <span class="switch__track"></span>
                             </label>
                             <span class="option-row__name">TERRAIN CORRECTION</span>
-                            <span class="option-row__hint">full SfM + high-res output · about 35 min</span>
+                            <span class="option-row__hint">full SfM + high-res output</span>
                             <button class="option-row__info" onclick="openGuideSection('terrain')" title="More info">ⓘ</button>
                         </div>
                         <div class="option-row">
@@ -2970,7 +2970,7 @@ function guideSectionUpload() {
     html += '<p>The page can be left open or closed. Status updates on its own.</p>';
     html += '<p><strong>Optional toggles:</strong></p>';
     html += '<div class="guide-fix-row">';
-    html += '<strong>Terrain correction</strong> — runs full 3D reconstruction and pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Corrects geometric error from elevation change and tall vertical features. Runtime ~35 min.<br><br>';
+    html += '<strong>Terrain correction</strong> — runs full 3D reconstruction and pins output to <span data-len="highres-gsd">2.5 cm/px</span> GSD. Corrects geometric error from elevation change and tall vertical features. Runtime ~35 min for a 65-photo job; scales with photo count.<br><br>';
     html += '<strong>Save WebODM task</strong> — retains the source WebODM project for inspection. Cleared with the job record <span data-len="purge-time">72 hours</span> after the job completes.';
     html += '</div>';
     fillUnitPlaceholders(html);
